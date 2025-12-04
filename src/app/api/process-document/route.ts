@@ -438,7 +438,8 @@ export async function POST(request: Request) {
     const callVisionModel = async (images: string[]) => {
       if (!images.length) throw new Error("No images available for vision OCR.");
       const completion = await openai.chat.completions.create({
-        model: "gpt-5",
+        // Use a vision-capable model; 4o-mini keeps cost down while handling images well.
+        model: "gpt-4o-mini",
         response_format: { type: "json_object" },
         messages: [
           {
