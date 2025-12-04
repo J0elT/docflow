@@ -1,65 +1,201 @@
+"use client";
+
+import Link from "next/link";
 import Image from "next/image";
+import { usePathname } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import DocumentTable from "@/components/DocumentTable";
+import UploadForm from "@/components/UploadForm";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import uploadOn from "../../images/upload-selected.png";
+import uploadOff from "../../images/upload-unselected.png";
+import folderOn from "../../images/open-folder-selected.png";
+import folderOff from "../../images/open-folder-unselected.png";
 
 export default function Home() {
+  const pathname = usePathname();
+  const [loading, setLoading] = useState(true);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [, setAuthError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const loadUser = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    const supabase = supabaseBrowser();
+
+    try {
+      const url = new URL(window.location.href);
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+      const searchParams = url.searchParams;
+
+      const code = searchParams.get("code") ?? hashParams.get("code") ?? undefined;
+      const errorDescription =
+        searchParams.get("error_description") ?? hashParams.get("error_description");
+
+      if (errorDescription) {
+        setAuthError(errorDescription);
+        setLoadError(errorDescription);
+      }
+
+      if (code) {
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) throw exchangeError;
+        const cleanedUrl = `${url.origin}${url.pathname}`;
+        window.history.replaceState({}, "", cleanedUrl);
+      }
+
+      const { data, error } = await supabase.auth.getUser();
+      if (error) throw error;
+      if (!data.user) {
+        setLoadError((prev) => prev ?? "Auth session missing!");
+        setUserEmail(null);
+        setLoading(false);
+        return;
+      }
+      setUserEmail(data.user.email ?? null);
+    } catch (err) {
+      console.error("auth handling failed", err);
+      setLoadError(err instanceof Error ? err.message : "Failed to load user");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
+
+  const handleLogout = async () => {
+    const supabase = supabaseBrowser();
+    await supabase.auth.signOut();
+    setUserEmail(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="pit-page flex items-center justify-center">
+        <p className="text-sm pit-muted">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!userEmail) {
+    return (
+      <div className="pit-page flex items-center justify-center">
+        <div className="pit-card text-center max-w-lg w-full">
+          <div className="mb-4">
+            <p className="pit-title">DocFlow</p>
+            <p className="pit-subtitle">
+              Upload documents, extract key info, and view results.
+            </p>
+            {loadError && <p className="pit-error mt-2">{loadError}</p>}
+          </div>
+          <Link href="/login" className="pit-cta pit-cta--primary">
+            Log in
+          </Link>
+          {loadError && (
+            <button onClick={loadUser} className="pit-cta pit-cta--secondary text-xs mt-3">
+              Retry
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="pit-page">
+      <main className="pit-shell">
+        <header
+          className="pit-header relative flex w-full items-center justify-center px-8"
+          style={{ paddingTop: "36px", paddingBottom: "18px" }}
+        >
+          <div
+            className="absolute left-1/2 flex -translate-x-1/2 flex-col items-center text-center"
+            style={{ fontFamily: "Georgia, serif", gap: "6px" }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <p className="pit-title" style={{ fontFamily: "inherit", margin: 0 }}>
+              <span style={{ fontSize: "36px", lineHeight: 1.1 }}>DocFlow</span>
+            </p>
+          </div>
+          <div
+            className="absolute flex items-center"
+            style={{ top: "50%", right: 0, transform: "translateY(-50%)" }}
           >
-            Documentation
-          </a>
-        </div>
+            <button
+              onClick={handleLogout}
+              className="pit-cta pit-cta--secondary text-xs"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "2px",
+                padding: "8px 12px",
+                textTransform: "none",
+              }}
+            >
+              <span style={{ fontSize: "13px", letterSpacing: "0" }}>Log out</span>
+              <span
+                className="pit-subtitle"
+                style={{ fontFamily: "Georgia, serif", fontSize: "11px", letterSpacing: "0" }}
+              >
+                {userEmail}
+              </span>
+            </button>
+          </div>
+        </header>
+
+        <section className="pit-card">
+          <UploadForm onUploaded={() => setRefreshKey((k) => k + 1)} />
+        </section>
+
+        <section>
+          <DocumentTable refreshKey={refreshKey} mode="home" />
+        </section>
       </main>
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-[rgba(0,0,0,0.08)]"
+        style={{
+          background:
+            "linear-gradient(to bottom, rgba(255,255,255,0.6) 0%, rgba(255,255,255,0.2) 20%, rgba(255,255,255,0) 100%)",
+          backdropFilter: "blur(10px)",
+        }}
+      >
+        <div
+          className="mx-auto flex max-w-4xl items-center justify-around px-6 py-3 text-sm"
+          style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.6)" }}
+        >
+          {[
+            { href: "/", on: uploadOn, off: uploadOff, label: "Home" },
+            { href: "/files", on: folderOn, off: folderOff, label: "Files" },
+          ].map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-label={item.label}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "6px",
+                }}
+              >
+                <Image
+                  src={active ? item.on : item.off}
+                  alt={item.label}
+                  width={28}
+                  height={28}
+                />
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }
