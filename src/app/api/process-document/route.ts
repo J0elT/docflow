@@ -306,7 +306,9 @@ export async function POST(request: Request) {
     if (!fileData) throw new Error("File missing in storage");
 
     const buffer = Buffer.from(await fileData.arrayBuffer());
-    const isPdf = doc.storage_path.toLowerCase().endsWith(".pdf");
+    const lowerPath = doc.storage_path.toLowerCase();
+    const isPdf = lowerPath.endsWith(".pdf");
+    const isImage = /\.(png|jpe?g)$/i.test(lowerPath);
 
     let textContent = "";
     if (isPdf) {
@@ -323,7 +325,7 @@ export async function POST(request: Request) {
       const parser = new PDFParse({ data: buffer });
       const parsed = await parser.getText();
       textContent = parsed.text;
-    } else {
+    } else if (!isImage) {
       textContent = buffer.toString("utf8");
     }
 
@@ -431,16 +433,8 @@ export async function POST(request: Request) {
       return images;
     };
 
-    let parsedJson;
-
-    if (textContent && textContent.trim().length > 0) {
-      parsedJson = await callTextModel(textContent);
-    } else if (isPdf) {
-      const images = await renderPdfImages(buffer);
-      if (!images.length) {
-        throw new Error("Unable to render PDF pages for vision fallback.");
-      }
-
+    const callVisionModel = async (images: string[]) => {
+      if (!images.length) throw new Error("No images available for vision OCR.");
       const completion = await openai.chat.completions.create({
         model: "gpt-4.1",
         response_format: { type: "json_object" },
@@ -483,17 +477,26 @@ export async function POST(request: Request) {
           },
         ],
       });
-
       const contentResult = completion.choices[0]?.message?.content;
       if (!contentResult) throw new Error("Missing content from OpenAI response");
-      parsedJson = JSON.parse(contentResult);
-      if (
-        !parsedJson ||
-        typeof parsedJson.summary !== "string" ||
-        parsedJson.summary.trim().length === 0
-      ) {
+      const parsed = JSON.parse(contentResult);
+      if (!parsed || typeof parsed.summary !== "string" || parsed.summary.trim().length === 0) {
         throw new Error("OpenAI vision returned empty summary.");
       }
+      return parsed;
+    };
+
+    let parsedJson;
+
+    if (textContent && textContent.trim().length > 0) {
+      parsedJson = await callTextModel(textContent);
+    } else if (isPdf) {
+      const images = await renderPdfImages(buffer);
+      parsedJson = await callVisionModel(images);
+    } else if (isImage) {
+      const mime = lowerPath.endsWith(".png") ? "image/png" : "image/jpeg";
+      const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+      parsedJson = await callVisionModel([dataUrl]);
     } else {
       throw new Error(
         "No text extracted and file type unsupported for OCR fallback."
