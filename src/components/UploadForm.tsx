@@ -341,7 +341,7 @@ export default function UploadForm({ onUploaded }: Props) {
           />
           <span
             style={{
-              fontSize: "10px",
+              fontSize: "9px",
               textTransform: "none",
               letterSpacing: "0.02em",
               color: "rgba(0,0,0,0.5)",
@@ -362,17 +362,7 @@ export default function UploadForm({ onUploaded }: Props) {
           <span className="pit-title" style={{ fontSize: "16px" }}>
             {loading ? "Uploading..." : "Drop file here or click to choose"}
           </span>
-          <span className="pit-subtitle">
-            PDF, DOC/DOCX, TXT, PNG, or JPEG. Paste copied text or screenshots via{" "}
-            <Image
-              src={copyIcon}
-              alt="Paste"
-              width={14}
-              height={14}
-              style={{ display: "inline-block", margin: "0 4px", verticalAlign: "middle", opacity: 0.35 }}
-            />
-            . Max 25MB; images are optimized before upload.
-          </span>
+          <span className="pit-subtitle">PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.</span>
         </div>
         <input
           ref={inputRef}
