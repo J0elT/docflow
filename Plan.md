@@ -20,7 +20,7 @@
 - How to revert or disable if needed
 
 ## Acceptance
-- Definition of done for this change (states covered: loading/error/empty; language; needs-attention vs ready-to-file; privacy copy)
+- Definition of done for this change (states covered: loading/error/empty; language; needs-attention vs ready-to-file; privacy copy; mobile-safe-area padding; clear primary CTA; tap targets ~44px; back/close visible)
 
 ---
 

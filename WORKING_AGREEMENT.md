@@ -27,7 +27,7 @@ Make the PRD real through a repeatable, auditable loop that avoids scope drift a
 
 ## Gates
 - **Process Gates**: DoD met; Plan.md updated; Decision log updated; tests executed and reported; accessibility sanity (keyboard/focus) for new UI controls.
-- **Product Gates**: Aligns to PRD promises—clear gist/action/deadline, preferred language honored, “Needs attention” vs “Ready to file” separation, archive/search working (when in scope), privacy copy intact.
+- **Product Gates**: Aligns to PRD promises—clear gist/action/deadline, preferred language honored, “Needs attention” vs “Ready to file” separation, archive/search working (when in scope), privacy copy intact. Mobile-first with safe-area padding; single clear primary CTA per screen; 44px tap targets; no hover-only interactions; explicit loading/error/empty states; clear back/close affordances; privacy messaging near uploads.
 
 ## Test Set & Acceptance (run after each milestone)
 - Fixed set of real letters: PDF + photo cases; expected: upload → gist/action/deadline; correct language; needs-attention vs ready-to-file placement; detail view correctness; basic search/filter.
