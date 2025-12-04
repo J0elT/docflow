@@ -118,7 +118,7 @@ const buildGist = (summary?: string | null) => {
   const trimmed = summary.trim();
   if (!trimmed) return null;
   const sentences = trimmed.split(/(?<=[.!?])\s+/);
-  const gist = sentences.slice(0, 2).join(" ");
+  const gist = sentences[0];
   return gist || trimmed;
 };
 
@@ -462,13 +462,30 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                 : "Action needed"
               : "No action required";
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
-            if (row.action_required && pendingTasks.length === 0)
-              badges.push({ label: "Action needed", tone: "warn" });
-            const dueBadge =
-              pendingTasks.length && (computeDueBadge(row, pendingTasks) as { label: string; tone: "warn" | "muted" | "info" } | null);
-            if (dueBadge) badges.push(dueBadge);
-            if (row.category_suggestion)
-              badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
+            if (pendingTasks.length > 0) {
+              // Tasks are the source of truth; keep badges minimal
+              if (row.followup_note) badges.push({ label: row.followup_note, tone: "muted" });
+            } else if (row.action_required) {
+              const dueBadge =
+                row.due_date && !Number.isNaN(new Date(row.due_date).getTime())
+                  ? { label: `Due ${row.due_date}`, tone: "info" as const }
+                  : { label: "Action needed", tone: "warn" as const };
+              badges.push(dueBadge);
+              if (row.followup_note) badges.push({ label: row.followup_note, tone: "muted" });
+            } else {
+              if (row.followup_note) {
+                badges.push({ label: row.followup_note, tone: "muted" });
+              } else {
+                badges.push({ label: "Info only", tone: "muted" });
+              }
+            }
+            const currentCategory = row.category_path ? getLastSegment(row.category_path) : null;
+            if (row.category_suggestion) {
+              const suggestedSegment = getLastSegment(row.category_suggestion);
+              if (!currentCategory || suggestedSegment !== currentCategory) {
+                badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
+              }
+            }
             if (row.followup_note)
               badges.push({ label: row.followup_note, tone: "muted" });
 
@@ -573,9 +590,6 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                     ) : gist ? (
                       <>
                         <span>{gist}</span>
-                        {row.due_date && (
-                          <span className="pit-subtitle text-xs">Due {row.due_date}</span>
-                        )}
                         {row.summary && (
                           <>
                             <button

@@ -343,7 +343,7 @@ export async function POST(request: Request) {
       }
       const truncated = content.slice(0, 8000);
       const completion = await openai.chat.completions.create({
-        model: "gpt-4.1-mini",
+        model: "gpt-5-mini",
         response_format: { type: "json_object" },
         messages: [
           {
@@ -353,27 +353,29 @@ export async function POST(request: Request) {
                 type: "text",
                 text:
                   [
-                    "You are an assistant that extracts structured info from letters and general documents.",
+                    "You are an assistant that extracts structured info from letters and explains it in simple words.",
                     "Return ONLY JSON with this exact shape:",
                     "{",
-                    '  "summary": "Short human-readable summary",',
+                    '  "summary": "1 short plain-language sentence (what this letter is about)",',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
                     '    "language": "de",',
                     '    "sender": "...",',
                     '    "topic": "...",',
                     '    "letter_date": "YYYY-MM-DD or null",',
-                    '    "due_date": "YYYY-MM-DD or null",',
+                    '    "due_date": "YYYY-MM-DD or null (only if a concrete deadline exists)",',
                     '    "amount_total": number or null,',
                     '    "currency": "EUR",',
-                    '    "action_required": true/false,',
-                    '    "action_description": "...",',
+                    '    "action_required": true/false (false if purely informational or awaiting other mail)",',
+                    '    "action_description": "Plain action in <=120 chars, or empty/null if none",',
+                    '    "follow_up": "Short note if the letter says another decision/letter will come, else null",',
                     '    "reference_ids": { "steuernummer": null, "kundennummer": null, "vertragsnummer": null }',
                     "  },",
                     '  "category_suggestion": { "path": ONE of these: ["Expenses","Phone"], ["Expenses","Rent"], ["Expenses","Utilities"], ["Expenses","Insurance"], ["Expenses","Taxes"], ["Expenses","Bank Statements"], ["Expenses","Invoices"], ["Documents"], "confidence": 0.8 },',
                     '  "task_suggestion": { "should_create_task": true/false, "title": "...", "description": "...", "due_date": "YYYY-MM-DD or null", "urgency": "low | normal | high" }',
                     "}",
-                    "Use null for unknown fields. If a standard category fits, use it (Finanzen/Steuern/Versicherung/Miete/Job/Gesundheit/Sonstiges). Otherwise propose a concise new path relevant to this document.",
+                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note.",
+                    "Keep wording simple and short (no legal jargon).",
                     "",
                     "Document text:",
                     truncated,
@@ -436,7 +438,7 @@ export async function POST(request: Request) {
     const callVisionModel = async (images: string[]) => {
       if (!images.length) throw new Error("No images available for vision OCR.");
       const completion = await openai.chat.completions.create({
-        model: "gpt-4.1",
+        model: "gpt-5",
         response_format: { type: "json_object" },
         messages: [
           {
@@ -449,24 +451,26 @@ export async function POST(request: Request) {
                     "You are an assistant that extracts structured info from scanned documents (German or English). Perform OCR on the images.",
                     "Return ONLY JSON with this shape:",
                     "{",
-                    '  "summary": "Short human-readable summary",',
+                    '  "summary": "1 short plain-language sentence (what this letter is about)",',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
                     '    "language": "de",',
                     '    "sender": "...",',
                     '    "topic": "...",',
                     '    "letter_date": "YYYY-MM-DD or null",',
-                    '    "due_date": "YYYY-MM-DD or null",',
+                    '    "due_date": "YYYY-MM-DD or null (only if a concrete deadline exists)",',
                     '    "amount_total": number or null,',
                     '    "currency": "EUR",',
-                    '    "action_required": true/false,',
-                    '    "action_description": "...",',
+                    '    "action_required": true/false (false if purely informational or awaiting other mail)",',
+                    '    "action_description": "Plain action in <=120 chars, or empty/null if none",',
+                    '    "follow_up": "Short note if the letter says another decision/letter will come, else null",',
                     '    "reference_ids": { "steuernummer": null, "kundennummer": null, "vertragsnummer": null }',
                     "  },",
                     '  "category_suggestion": { "path": ONE of these: ["Expenses","Phone"], ["Expenses","Rent"], ["Expenses","Utilities"], ["Expenses","Insurance"], ["Expenses","Taxes"], ["Expenses","Bank Statements"], ["Expenses","Invoices"], ["Documents"], "confidence": 0.8 },',
                     '  "task_suggestion": { "should_create_task": true/false, "title": "...", "description": "...", "due_date": "YYYY-MM-DD or null", "urgency": "low | normal | high" }',
                     "}",
-                    "Use null for unknown fields. If a standard category fits, use it (Finanzen/Steuern/Versicherung/Miete/Job/Gesundheit/Sonstiges). Otherwise propose a concise new path relevant to this document.",
+                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note.",
+                    "Keep wording simple and short (no legal jargon).",
                   ].join("\n"),
               },
               ...images.map((img) => ({
