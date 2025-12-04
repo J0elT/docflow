@@ -448,12 +448,10 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
             const gist = buildGist(row.summary);
             const isSummaryExpanded = expandedSummaries.has(row.id);
             const primaryAction = pendingTasks.length
-              ? `Action needed: ${pendingTasks[0].title}${
-                  pendingTasks[0].due_date ? ` · due ${pendingTasks[0].due_date}` : ""
-                }`
+              ? `${pendingTasks.length} open task${pendingTasks.length > 1 ? "s" : ""}`
               : row.action_required
               ? row.due_date
-                ? `Action needed: due ${row.due_date}`
+                ? `Action needed by ${row.due_date}`
                 : "Action needed"
               : "No action required";
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
@@ -614,7 +612,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                   </div>
                 </td>
                 <td className="align-top text-left">
-                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="text-sm font-medium">{primaryAction}</div>
                       <div className="flex items-center gap-2">
