@@ -12,6 +12,7 @@ type ExtractionRow = {
     summary?: string;
     key_fields?: Record<string, unknown>;
   };
+  created_at?: string;
 };
 
 type CategoryRow = {
@@ -54,6 +55,8 @@ type TableRow = {
   amount?: string;
   due_date?: string | null;
   action_required?: boolean;
+  action_text?: string | null;
+  category_suggestion?: string | null;
   created_at: string;
   summary?: string;
 };
@@ -154,7 +157,7 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
         const docsQuery = supabase
           .from("documents")
           .select(
-            "id, title, status, error_message, storage_path, category_id, created_at, extra:extractions(content)"
+            "id, title, status, error_message, storage_path, category_id, created_at, extra:extractions(content, created_at)"
           )
           .eq("user_id", user.id)
           .order("created_at", { ascending: false });
@@ -265,39 +268,60 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
         });
 
         const mapped =
-          (docsRes.data as DocumentRow[] | null)?.map((doc) => ({
-            id: doc.id,
-            title: doc.title,
-            status: doc.status,
-            error_message: doc.error_message,
-            storage_path: doc.storage_path ?? undefined,
-            category_id: doc.category_id ?? null,
-            category_path: buildPath(doc.category_id ?? undefined),
-            tasks: tasksByDoc.get(doc.id) ?? [],
-            created_at: doc.created_at,
-            summary: doc.extra?.[0]?.content?.summary,
-            sender:
-              typeof doc.extra?.[0]?.content?.key_fields?.sender === "string"
-                ? doc.extra?.[0]?.content?.key_fields?.sender
-                : undefined,
-            topic:
-              typeof doc.extra?.[0]?.content?.key_fields?.topic === "string"
-                ? doc.extra?.[0]?.content?.key_fields?.topic
-                : undefined,
-            amount: (() => {
-              const amount = doc.extra?.[0]?.content?.key_fields?.amount_total;
-              const currency = doc.extra?.[0]?.content?.key_fields?.currency;
-              if (typeof amount !== "number") return undefined;
-              return `${amount} ${currency || ""}`.trim();
-            })(),
-            due_date:
-              typeof doc.extra?.[0]?.content?.key_fields?.due_date === "string"
-                ? doc.extra?.[0]?.content?.key_fields?.due_date
-                : null,
-            action_required:
-              !!doc.extra?.[0]?.content?.key_fields?.action_required ||
-              (tasksByDoc.get(doc.id) ?? []).some((t) => t.status !== "done"),
-          })) ?? [];
+          (docsRes.data as DocumentRow[] | null)?.map((doc) => {
+            const latest = pickLatestExtraction(doc.extra as ExtractionRow[] | undefined);
+            const keyFields = (latest?.key_fields ?? {}) as Record<string, unknown>;
+            const summary =
+              typeof latest?.summary === "string" && latest.summary.trim()
+                ? latest.summary.trim()
+                : undefined;
+            const sender =
+              typeof keyFields.sender === "string" && keyFields.sender.trim()
+                ? (keyFields.sender as string).trim()
+                : undefined;
+            const topic =
+              typeof keyFields.topic === "string" && keyFields.topic.trim()
+                ? (keyFields.topic as string).trim()
+                : undefined;
+            const amount =
+              typeof keyFields.amount_total === "number"
+                ? `${keyFields.amount_total} ${(keyFields.currency as string | undefined) || ""}`.trim()
+                : undefined;
+            const due =
+              typeof keyFields.due_date === "string" && keyFields.due_date.trim()
+                ? (keyFields.due_date as string).trim()
+                : null;
+            const actionRequired =
+              keyFields.action_required === true ||
+              (tasksByDoc.get(doc.id) ?? []).some((t) => t.status !== "done");
+            const actionText =
+              typeof keyFields.action_description === "string" && keyFields.action_description.trim()
+                ? (keyFields.action_description as string).trim()
+                : null;
+            const categorySuggestionPath = Array.isArray((latest as any)?.category_suggestion?.path)
+              ? ((latest as any)?.category_suggestion?.path as string[]).filter(Boolean).join(" / ")
+              : null;
+
+            return {
+              id: doc.id,
+              title: doc.title,
+              status: doc.status,
+              error_message: doc.error_message,
+              storage_path: doc.storage_path ?? undefined,
+              category_id: doc.category_id ?? null,
+              category_path: buildPath(doc.category_id ?? undefined),
+              tasks: tasksByDoc.get(doc.id) ?? [],
+              created_at: doc.created_at,
+              summary,
+              sender,
+              topic,
+              amount,
+              due_date: due,
+              action_required: actionRequired,
+              action_text: actionText,
+              category_suggestion: categorySuggestionPath,
+            };
+          }) ?? [];
 
         setRows(mapped.filter((r) => r.status !== "error"));
       } catch (err) {
@@ -310,6 +334,16 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
     },
     [categoryFilter]
   );
+
+  const pickLatestExtraction = (extras?: ExtractionRow[] | null) => {
+    if (!extras || extras.length === 0) return null;
+    const sorted = [...extras].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
+    return sorted[0]?.content ?? null;
+  };
 
   useEffect(() => {
     fetchDocs(true);
@@ -395,6 +429,11 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
                 ? `Action needed: due ${row.due_date}`
                 : "Action needed"
               : "No action required";
+            const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
+            if (row.action_required) badges.push({ label: "Action needed", tone: "warn" });
+            if (row.due_date) badges.push({ label: `Due ${row.due_date}`, tone: "info" });
+            if (row.category_suggestion)
+              badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
 
             return (
               <tr key={row.id}>
@@ -463,6 +502,33 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
                 </td>
                 <td className="align-top text-left">
                   <div className="flex flex-col gap-2">
+                    {badges.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {badges.map((b, idx) => (
+                          <span
+                            key={`${row.id}-badge-${idx}`}
+                            className="text-[11px]"
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: "999px",
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              background:
+                                b.tone === "warn"
+                                  ? "rgba(226,76,75,0.12)"
+                                  : b.tone === "info"
+                                  ? "rgba(0,0,0,0.04)"
+                                  : "rgba(0,0,0,0.02)",
+                              color:
+                                b.tone === "warn"
+                                  ? "#b32625"
+                                  : "rgba(0,0,0,0.7)",
+                            }}
+                          >
+                            {b.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {row.status !== "done" ? (
                       <div className="flex items-center">
                         <span className="inline-block h-4 w-4 animate-spin rounded-full border border-transparent border-t-current" />
