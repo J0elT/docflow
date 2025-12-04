@@ -4,6 +4,7 @@ import Image from "next/image";
 import { FormEvent, useCallback, useRef, useState } from "react";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import uploadIcon from "../../images/upload-unselected.png";
+import copyIcon from "../../images/copy.png";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type Props = {
@@ -294,22 +295,6 @@ export default function UploadForm({ onUploaded }: Props) {
 
   return (
     <form onSubmit={handleSubmit} className="flex w-full flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <label className="pit-label">Upload a document</label>
-        <button
-          type="button"
-          onClick={handlePasteButtonClick}
-          className="pit-cta pit-cta--secondary text-[12px]"
-          style={{ padding: "8px 10px" }}
-        >
-          Paste copied text or screenshot
-        </button>
-      </div>
-      {pasteActive && (
-        <p className="text-xs pit-subtitle" aria-live="polite">
-          {pasteHint || "Press Cmd/Ctrl+V now to paste."}
-        </p>
-      )}
       <div
         onClick={handleClick}
         onDragOver={(e) => {
@@ -328,6 +313,43 @@ export default function UploadForm({ onUploaded }: Props) {
             : "inset 0 1px 0 rgba(255,255,255,0.04)",
         }}
       >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handlePasteButtonClick();
+          }}
+          className="pit-cta pit-cta--secondary absolute right-3 top-3 flex flex-col items-center gap-1"
+          style={{
+            padding: "12px",
+            borderRadius: "16px",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 72,
+            height: 72,
+            boxShadow: "0 6px 16px rgba(0,0,0,0.08)",
+          }}
+          aria-label="Paste copied text or screenshot"
+        >
+          <Image
+            src={copyIcon}
+            alt="Paste"
+            width={28}
+            height={28}
+            style={{ opacity: 0.35 }}
+          />
+          <span
+            style={{
+              fontSize: "10px",
+              textTransform: "none",
+              letterSpacing: "0.02em",
+              color: "rgba(0,0,0,0.5)",
+            }}
+          >
+            paste
+          </span>
+        </button>
         <div className="flex flex-col items-center gap-2 text-center">
           <Image
             src={uploadIcon}
@@ -341,7 +363,15 @@ export default function UploadForm({ onUploaded }: Props) {
             {loading ? "Uploading..." : "Drop file here or click to choose"}
           </span>
           <span className="pit-subtitle">
-            PDF, DOC/DOCX, TXT, PNG, or JPEG. Paste screenshots (Cmd/Ctrl+V). Max 25MB; images are optimized before upload.
+            PDF, DOC/DOCX, TXT, PNG, or JPEG. Paste copied text or screenshots via{" "}
+            <Image
+              src={copyIcon}
+              alt="Paste"
+              width={14}
+              height={14}
+              style={{ display: "inline-block", margin: "0 4px", verticalAlign: "middle", opacity: 0.35 }}
+            />
+            . Max 25MB; images are optimized before upload.
           </span>
         </div>
         <input
