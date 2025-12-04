@@ -112,14 +112,41 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
     }
   };
 
-  const buildGist = (summary?: string | null) => {
-    if (!summary) return null;
-    const trimmed = summary.trim();
-    if (!trimmed) return null;
-    const sentences = trimmed.split(/(?<=[.!?])\s+/);
-    const gist = sentences.slice(0, 2).join(" ");
-    return gist || trimmed;
-  };
+const buildGist = (summary?: string | null) => {
+  if (!summary) return null;
+  const trimmed = summary.trim();
+  if (!trimmed) return null;
+  const sentences = trimmed.split(/(?<=[.!?])\s+/);
+  const gist = sentences.slice(0, 2).join(" ");
+  return gist || trimmed;
+};
+
+const ONE_DAY = 24 * 60 * 60 * 1000;
+const getTodayStart = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
+
+const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
+  const taskDue = pendingTasks
+    .map((t) => (t.due_date ? new Date(t.due_date).getTime() : null))
+    .filter((t): t is number => t !== null && !Number.isNaN(t))
+    .sort((a, b) => a - b)[0];
+  const fallbackDue =
+    row.due_date && !Number.isNaN(new Date(row.due_date).getTime())
+      ? new Date(row.due_date).getTime()
+      : null;
+  const due = taskDue ?? fallbackDue;
+  if (!due) return null;
+
+  const today = getTodayStart();
+  const daysDiff = Math.floor((due - today) / ONE_DAY);
+  if (daysDiff < 0) return { label: `Overdue · ${Math.abs(daysDiff)}d`, tone: "warn" as const };
+  if (daysDiff === 0) return { label: "Due today", tone: "warn" as const };
+  if (daysDiff <= 7) return { label: `Due in ${daysDiff}d`, tone: "info" as const };
+  return { label: `Due in ${daysDiff}d`, tone: "muted" as const };
+};
 
   const getLastSegment = (path?: string) => {
     if (!path) return "Uncategorized";
@@ -431,7 +458,8 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
               : "No action required";
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
             if (row.action_required) badges.push({ label: "Action needed", tone: "warn" });
-            if (row.due_date) badges.push({ label: `Due ${row.due_date}`, tone: "info" });
+            const dueBadge = pendingTasks.length ? computeDueBadge(row, pendingTasks) : null;
+            if (dueBadge) badges.push(dueBadge);
             if (row.category_suggestion)
               badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
 
