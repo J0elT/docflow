@@ -57,6 +57,7 @@ type TableRow = {
   action_required?: boolean;
   action_text?: string | null;
   category_suggestion?: string | null;
+  followup_note?: string | null;
   created_at: string;
   summary?: string;
 };
@@ -328,6 +329,11 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
             const categorySuggestionPath = Array.isArray((latest as any)?.category_suggestion?.path)
               ? ((latest as any)?.category_suggestion?.path as string[]).filter(Boolean).join(" / ")
               : null;
+            const followup =
+              typeof (latest as any)?.key_fields?.follow_up === "string" &&
+              ((latest as any)?.key_fields?.follow_up as string).trim()
+                ? ((latest as any)?.key_fields?.follow_up as string).trim()
+                : null;
 
             return {
               id: doc.id,
@@ -347,6 +353,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
               action_required: actionRequired,
               action_text: actionText,
               category_suggestion: categorySuggestionPath,
+              followup_note: followup,
             };
           }) ?? [];
 
@@ -455,11 +462,15 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                 : "Action needed"
               : "No action required";
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
-            if (row.action_required) badges.push({ label: "Action needed", tone: "warn" });
-            const dueBadge = pendingTasks.length ? computeDueBadge(row, pendingTasks) : null;
+            if (row.action_required && pendingTasks.length === 0)
+              badges.push({ label: "Action needed", tone: "warn" });
+            const dueBadge =
+              pendingTasks.length && (computeDueBadge(row, pendingTasks) as { label: string; tone: "warn" | "muted" | "info" } | null);
             if (dueBadge) badges.push(dueBadge);
             if (row.category_suggestion)
               badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
+            if (row.followup_note)
+              badges.push({ label: row.followup_note, tone: "muted" });
 
             return (
               <tr key={row.id}>
