@@ -118,8 +118,9 @@ const buildGist = (summary?: string | null) => {
   const trimmed = summary.trim();
   if (!trimmed) return null;
   const sentences = trimmed.split(/(?<=[.!?])\s+/);
-  const gist = sentences[0];
-  return gist || trimmed;
+  const gist = sentences.slice(0, 2).join(" ");
+  const limited = gist.slice(0, 220);
+  return limited || trimmed;
 };
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -479,15 +480,22 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                 badges.push({ label: "Info only", tone: "muted" });
               }
             }
+            // Deduplicate badges by label to avoid duplicates
+            const seen = new Set<string>();
+            const uniqBadges = badges.filter((b) => {
+              if (seen.has(b.label)) return false;
+              seen.add(b.label);
+              return true;
+            });
             const currentCategory = row.category_path ? getLastSegment(row.category_path) : null;
             if (row.category_suggestion) {
               const suggestedSegment = getLastSegment(row.category_suggestion);
               if (!currentCategory || suggestedSegment !== currentCategory) {
-                badges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
+                uniqBadges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
               }
             }
             if (row.followup_note)
-              badges.push({ label: row.followup_note, tone: "muted" });
+              uniqBadges.push({ label: row.followup_note, tone: "muted" });
 
             return (
               <tr key={row.id}>
@@ -556,9 +564,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                 </td>
                 <td className="align-top text-left">
                   <div className="flex flex-col gap-2">
-                    {badges.length > 0 && (
+                    {uniqBadges.length > 0 && (
                       <div className="flex flex-wrap gap-2">
-                        {badges.map((b, idx) => (
+                        {uniqBadges.map((b, idx) => (
                           <span
                             key={`${row.id}-badge-${idx}`}
                             className="text-[11px]"
@@ -621,12 +629,15 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               </span>
                             </button>
                             {isSummaryExpanded && (
-                              <p
-                                className="pit-subtitle text-xs"
-                                style={{ lineHeight: 1.4, color: "rgba(0,0,0,0.7)" }}
-                              >
-                                {row.summary}
-                              </p>
+                              <div className="pit-subtitle text-xs" style={{ lineHeight: 1.5, color: "rgba(0,0,0,0.75)" }}>
+                                <ul style={{ paddingLeft: "18px", margin: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
+                                  {row.summary.split(/(?<=[.!?])\s+/).map((bullet, idx) => (
+                                    <li key={`${row.id}-bullet-${idx}`} style={{ listStyleType: "disc" }}>
+                                      {bullet}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
                             )}
                           </>
                         )}

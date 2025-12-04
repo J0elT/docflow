@@ -356,7 +356,7 @@ export async function POST(request: Request) {
                     "You are an assistant that extracts structured info from letters and explains it in simple words.",
                     "Return ONLY JSON with this exact shape:",
                     "{",
-                    '  "summary": "1 short plain-language sentence (what this letter is about)",',
+                    '  "summary": "Max 2 short sentences (<=220 chars) in plain language: what this letter decides, key dates/amounts, and whether more info will come.",',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
                     '    "language": "de",',
@@ -374,8 +374,8 @@ export async function POST(request: Request) {
                     '  "category_suggestion": { "path": ONE of these: ["Expenses","Phone"], ["Expenses","Rent"], ["Expenses","Utilities"], ["Expenses","Insurance"], ["Expenses","Taxes"], ["Expenses","Bank Statements"], ["Expenses","Invoices"], ["Documents"], "confidence": 0.8 },',
                     '  "task_suggestion": { "should_create_task": true/false, "title": "...", "description": "...", "due_date": "YYYY-MM-DD or null", "urgency": "low | normal | high" }',
                     "}",
-                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note.",
-                    "Keep wording simple and short (no legal jargon).",
+                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note. Include key dates/amounts only if present.",
+                    "Keep wording simple, concrete, and short (no legal jargon).",
                     "",
                     "Document text:",
                     truncated,
@@ -438,8 +438,8 @@ export async function POST(request: Request) {
     const callVisionModel = async (images: string[]) => {
       if (!images.length) throw new Error("No images available for vision OCR.");
       const completion = await openai.chat.completions.create({
-        // Use a vision-capable model; 4o-mini keeps cost down while handling images well.
-        model: "gpt-4o-mini",
+        // Use a vision-capable model for OCR + reasoning on scanned docs/images.
+        model: "gpt-5",
         response_format: { type: "json_object" },
         messages: [
           {
@@ -452,7 +452,7 @@ export async function POST(request: Request) {
                     "You are an assistant that extracts structured info from scanned documents (German or English). Perform OCR on the images.",
                     "Return ONLY JSON with this shape:",
                     "{",
-                    '  "summary": "1 short plain-language sentence (what this letter is about)",',
+                    '  "summary": "Max 2 short sentences (<=220 chars) in plain language: what this letter decides, key dates/amounts, and whether more info will come.",',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
                     '    "language": "de",',
@@ -470,8 +470,8 @@ export async function POST(request: Request) {
                     '  "category_suggestion": { "path": ONE of these: ["Expenses","Phone"], ["Expenses","Rent"], ["Expenses","Utilities"], ["Expenses","Insurance"], ["Expenses","Taxes"], ["Expenses","Bank Statements"], ["Expenses","Invoices"], ["Documents"], "confidence": 0.8 },',
                     '  "task_suggestion": { "should_create_task": true/false, "title": "...", "description": "...", "due_date": "YYYY-MM-DD or null", "urgency": "low | normal | high" }',
                     "}",
-                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note.",
-                    "Keep wording simple and short (no legal jargon).",
+                    "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note. Include key dates/amounts only if present.",
+                    "Keep wording simple, concrete, and short (no legal jargon).",
                   ].join("\n"),
               },
               ...images.map((img) => ({
