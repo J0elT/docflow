@@ -15,6 +15,8 @@ const MAX_INPUT_BYTES = 25 * 1024 * 1024; // 25MB hard cap on incoming file to p
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // target cap for upload after normalization
 const MAX_IMAGE_DIMENSION = 1600; // px; resize larger images to keep payload reasonable
 const IMAGE_QUALITY = 0.75;
+const MAX_FILES_AT_ONCE = 10;
+const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB total per batch to avoid overload
 
 export default function UploadForm({ onUploaded }: Props) {
   const [loading, setLoading] = useState(false);
@@ -236,16 +238,36 @@ export default function UploadForm({ onUploaded }: Props) {
     [loading, onUploaded]
   );
 
+  const handleFiles = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    const list = Array.from(files);
+    if (list.length > MAX_FILES_AT_ONCE) {
+      alert(`Please upload up to ${MAX_FILES_AT_ONCE} files at a time.`);
+      return;
+    }
+    const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      alert("Total upload too large. Please upload a smaller batch.");
+      return;
+    }
+    for (const file of list) {
+      // eslint-disable-next-line no-await-in-loop
+      await startUpload(file);
+    }
+  };
+
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    const file = event.dataTransfer.files?.[0] ?? null;
-    startUpload(file);
+    const files = event.dataTransfer.files;
+    handleFiles(files);
   };
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
-    startUpload(file);
+    const files = event.target.files;
+    handleFiles(files);
+    // reset input to allow re-selecting same files
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const handleClick = () => {
@@ -296,7 +318,7 @@ export default function UploadForm({ onUploaded }: Props) {
   return (
     <form onSubmit={handleSubmit} className="flex w-full flex-col gap-3">
       <div
-        onClick={handleClick}
+          onClick={handleClick}
         onDragOver={(e) => {
           e.preventDefault();
           setDragging(true);
@@ -360,7 +382,7 @@ export default function UploadForm({ onUploaded }: Props) {
             priority
           />
           <span className="pit-title" style={{ fontSize: "16px" }}>
-            {loading ? "Uploading..." : "Drop file here or click to choose"}
+            {loading ? "Uploading..." : "Drop files here or click to choose"}
           </span>
           <span className="pit-subtitle">PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.</span>
         </div>
@@ -368,6 +390,7 @@ export default function UploadForm({ onUploaded }: Props) {
           ref={inputRef}
           type="file"
           accept=".pdf,.txt,.doc,.docx,.png,.jpg,.jpeg"
+          multiple
           className="hidden"
           onChange={handleInputChange}
         />
