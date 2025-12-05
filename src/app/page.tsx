@@ -125,17 +125,22 @@ export default function Home() {
             className="absolute flex items-center"
             style={{ top: "50%", right: 0, transform: "translateY(-50%)" }}
           >
-            <button
+            <div
+              role="button"
+              tabIndex={0}
               onClick={handleLogout}
-              className="pit-cta pit-cta--secondary text-xs"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") handleLogout();
+              }}
               style={{
                 display: "flex",
                 flexDirection: "column",
-                alignItems: "center",
+                alignItems: "flex-end",
                 justifyContent: "center",
                 gap: "2px",
-                padding: "8px 12px",
-                textTransform: "none",
+                cursor: "pointer",
+                padding: "6px 0",
+                color: "rgba(0,0,0,0.65)",
               }}
             >
               <span style={{ fontSize: "13px", letterSpacing: "0" }}>Log out</span>
@@ -145,7 +150,7 @@ export default function Home() {
               >
                 {userEmail}
               </span>
-            </button>
+            </div>
           </div>
         </header>
 
