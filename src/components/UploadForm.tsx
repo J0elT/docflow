@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useCallback, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import uploadIcon from "../../images/upload-unselected.png";
 import copyIcon from "../../images/copy.png";
@@ -9,6 +9,7 @@ import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 type Props = {
   onUploaded: () => void;
+  processing?: boolean;
 };
 
 const MAX_INPUT_BYTES = 25 * 1024 * 1024; // 25MB hard cap on incoming file to protect client
@@ -18,13 +19,26 @@ const IMAGE_QUALITY = 0.75;
 const MAX_FILES_AT_ONCE = 10;
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024; // 100MB total per batch to avoid overload
 
-export default function UploadForm({ onUploaded }: Props) {
+export default function UploadForm({ onUploaded, processing = false }: Props) {
   const [loading, setLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [pasteActive, setPasteActive] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const pasteTargetRef = useRef<HTMLTextAreaElement | null>(null);
   const [pasteHint, setPasteHint] = useState<string | null>(null);
+  const [pendingProcessing, setPendingProcessing] = useState(false);
+
+  useEffect(() => {
+    if (processing) {
+      setPendingProcessing(false);
+      return;
+    }
+    if (!loading && pendingProcessing) {
+      const id = setTimeout(() => setPendingProcessing(false), 1200);
+      return () => clearTimeout(id);
+    }
+    return;
+  }, [processing, loading, pendingProcessing]);
 
   const buildError = (message: string) => {
     alert(message);
@@ -118,11 +132,14 @@ export default function UploadForm({ onUploaded }: Props) {
       y -= fontSize + 4;
     });
 
-    const pdfBytes = await doc.save();
-    return new File([pdfBytes], filename, { type: "application/pdf" });
+    const rawBytes = await doc.save();
+    // Ensure we end up with a Uint8Array backed by an ArrayBuffer (not SharedArrayBuffer)
+    const bytes =
+      rawBytes instanceof Uint8Array ? new Uint8Array(rawBytes) : new Uint8Array(rawBytes as ArrayBuffer);
+    return new File([bytes], filename, { type: "application/pdf" });
   };
 
-  const handlePaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
+  const handlePaste = async (event: React.ClipboardEvent<HTMLElement>) => {
     if (loading) return;
     const items = event.clipboardData?.items;
     if (!items || !items.length) return;
@@ -171,6 +188,7 @@ export default function UploadForm({ onUploaded }: Props) {
         return;
       }
 
+      setPendingProcessing(true);
       setLoading(true);
       try {
         let fileToUpload = file;
@@ -382,7 +400,11 @@ export default function UploadForm({ onUploaded }: Props) {
             priority
           />
           <span className="pit-title" style={{ fontSize: "16px" }}>
-            {loading ? "Uploading..." : "Drop files here or click to choose"}
+            {loading
+              ? "Uploading..."
+              : processing || pendingProcessing
+              ? "Processing upload..."
+              : "Drop files here or click to choose"}
           </span>
           <span className="pit-subtitle">PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.</span>
         </div>

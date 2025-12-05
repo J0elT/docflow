@@ -50,25 +50,55 @@ type TableRow = {
   category_path?: string;
   tasks?: TaskRow[];
   category_id?: string | null;
+  category_suggestion_slug?: string | null;
   sender?: string;
   topic?: string;
   amount?: string;
   due_date?: string | null;
   action_required?: boolean;
   action_text?: string | null;
-  category_suggestion?: string | null;
   followup_note?: string | null;
   created_at: string;
   summary?: string;
+  main_summary?: string | null;
+  badge_text?: string | null;
+  extra_details?: string[];
 };
 
 type Props = {
   refreshKey: number;
   categoryFilter?: string[] | null;
   mode?: "home" | "files";
+  onProcessingChange?: (hasProcessing: boolean) => void;
 };
 
-export default function DocumentTable({ refreshKey, categoryFilter, mode = "files" }: Props) {
+const CATEGORY_OPTIONS = [
+  { slug: "arbeitsagentur", label: "Arbeitsagentur / Sozialleistungen" },
+  { slug: "jobcenter", label: "Jobcenter (Bürgergeld, SGB II)" },
+  { slug: "arbeitgeber", label: "Arbeit & Verträge" },
+  { slug: "finanzamt", label: "Finanzamt / Steuern" },
+  { slug: "krankenkasse", label: "Gesundheit & Pflege" },
+  { slug: "miete", label: "Miete & Wohnen" },
+  { slug: "telefon_internet", label: "Energie / Telefon / Internet" },
+  { slug: "bank_kredit", label: "Banken, Kredite & Inkasso" },
+  { slug: "versicherung", label: "Versicherungen (nicht Gesundheit)" },
+  { slug: "recht_gericht", label: "Gerichte & Rechtsstreit" },
+  { slug: "auto_verkehr", label: "Auto & Verkehr" },
+  { slug: "einkauf_garantie", label: "Einkäufe, Rechnungen & Garantien" },
+  { slug: "bildung_kinder", label: "Bildung & Kinderbetreuung" },
+  { slug: "aufenthalt_behoerde", label: "Aufenthalt & Behörden" },
+  { slug: "sonstiges", label: "Sonstiges" },
+];
+
+const slugToLabel = (slug?: string | null) =>
+  CATEGORY_OPTIONS.find((c) => c.slug === slug)?.label || "Sonstiges";
+
+export default function DocumentTable({
+  refreshKey,
+  categoryFilter,
+  mode = "files",
+  onProcessingChange,
+}: Props) {
   const [rows, setRows] = useState<TableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +119,13 @@ export default function DocumentTable({ refreshKey, categoryFilter, mode = "file
   const [isMounted, setIsMounted] = useState(false);
   const [flashingComplete, setFlashingComplete] = useState<Set<string>>(new Set());
   const [recentlyDone, setRecentlyDone] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (onProcessingChange) {
+      const hasProcessing = rows.some((r) => r.status !== "done");
+      onProcessingChange(hasProcessing);
+    }
+  }, [rows, onProcessingChange]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -117,10 +154,94 @@ const buildGist = (summary?: string | null) => {
   if (!summary) return null;
   const trimmed = summary.trim();
   if (!trimmed) return null;
-  const sentences = trimmed.split(/(?<=[.!?])\s+/);
+  const sentences = trimmed
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   const gist = sentences.slice(0, 2).join(" ");
   const limited = gist.slice(0, 220);
   return limited || trimmed;
+};
+
+const buildDetailBullets = (
+  mainSummary?: string | null,
+  extras?: string[] | null,
+  taskTitles?: string[]
+) => {
+  if (!extras || extras.length === 0) return [];
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[.,;:!?()[\]"']/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const extractNumberTokens = (value: string) =>
+    Array.from(value.matchAll(/\d[\d.,\/-]*/g)).map((m) => m[0].replace(/[^\d]/g, ""));
+
+  const summaryNorms = (mainSummary || "")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => normalize(s))
+    .filter(Boolean);
+  const keySentences = summaryNorms.slice(0, 2);
+  const summaryNumbers = new Set(
+    keySentences.flatMap((s) => extractNumberTokens(s))
+  );
+  const taskNorms = (taskTitles || []).map((t) => normalize(t)).filter(Boolean);
+
+  const score = (text: string) => {
+    const t = text.toLowerCase();
+    const has = (...keys: string[]) => keys.some((k) => t.includes(k));
+    if (has("zahlungseingang", "paid", "payment received", "lastschrift", "abbuchung")) return 0;
+    if (has("frist", "deadline", "due ", "bis ")) return 1;
+    if (has("betrag", "summe", "total", "gesamt", "eur", "usd", "invoice", "rechnung")) return 2;
+    if (has("artikel", "item", "produkt", "service", "leistung")) return 3;
+    if (has("pflicht", "obligation", "return", "zurück", "non-compete", "confidential")) return 4;
+    if (has("versand", "shipping", "liefer", "tracking")) return 5;
+    if (has("kunde", "mandat", "referenz", "id", "nummer", "nr")) return 6;
+    return 10;
+  };
+  const sortedExtras = [...extras].sort((a, b) => score(a) - score(b));
+
+  const isDuplicateOfSummary = (bullet: string) => {
+    if (!bullet) return false;
+    const bulletNumbers = extractNumberTokens(bullet);
+    if (bulletNumbers.length && bulletNumbers.every((n) => summaryNumbers.has(n))) {
+      return true;
+    }
+    if (taskNorms.some((t) => t && (t.includes(bullet) || bullet.includes(t)))) {
+      return true;
+    }
+    return keySentences.some((sent) => {
+      if (!sent) return false;
+      if (sent.includes(bullet) || bullet.includes(sent)) return true;
+      const a = new Set(sent.split(" "));
+      const b = new Set(bullet.split(" "));
+      if (!a.size || !b.size) return false;
+      let overlap = 0;
+      for (const token of a) {
+        if (b.has(token)) overlap += 1;
+      }
+      const maxSize = Math.max(a.size, b.size);
+      return overlap / maxSize >= 0.6;
+    });
+  };
+
+  const seen = new Set<string>();
+  const bullets: string[] = [];
+  for (const raw of sortedExtras) {
+    if (typeof raw !== "string") continue;
+    const s = raw.trim();
+    if (!s || s.length < 4) continue;
+    const norm = normalize(s);
+    if (!norm) continue;
+    if (isDuplicateOfSummary(norm)) continue;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    bullets.push(s);
+    if (bullets.length >= 8) break;
+  }
+  return bullets;
 };
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -130,7 +251,17 @@ const getTodayStart = () => {
   return d.getTime();
 };
 
+const formatDate = (iso?: string | null) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+};
+
 const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
+  const hasAction = row.action_required || (pendingTasks ?? []).length > 0;
+  if (!hasAction) return null;
+
   const taskDue = pendingTasks
     .map((t) => (t.due_date ? new Date(t.due_date).getTime() : null))
     .filter((t): t is number => t !== null && !Number.isNaN(t))
@@ -144,10 +275,12 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
 
   const today = getTodayStart();
   const daysDiff = Math.floor((due - today) / ONE_DAY);
-  if (daysDiff < 0) return { label: `Overdue · ${Math.abs(daysDiff)}d`, tone: "warn" as const };
-  if (daysDiff === 0) return { label: "Due today", tone: "warn" as const };
-  if (daysDiff <= 7) return { label: `Due in ${daysDiff}d`, tone: "info" as const };
-  return { label: `Due in ${daysDiff}d`, tone: "muted" as const };
+  if (daysDiff < 0)
+    return { label: `Frist abgelaufen (${Math.abs(daysDiff)} Tage)`, tone: "warn" as const };
+  if (daysDiff === 0) return { label: "Frist heute", tone: "warn" as const };
+  if (daysDiff === 1) return { label: "Frist in 1 Tag", tone: "info" as const };
+  if (daysDiff <= 7) return { label: `Frist in ${daysDiff} Tagen`, tone: "info" as const };
+  return { label: `Frist in ${daysDiff} Tagen`, tone: "muted" as const };
 };
 
   const getLastSegment = (path?: string) => {
@@ -300,10 +433,22 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
           (docsRes.data as DocumentRow[] | null)?.map((doc) => {
             const latest = pickLatestExtraction(doc.extra as ExtractionRow[] | undefined);
             const keyFields = (latest?.key_fields ?? {}) as Record<string, unknown>;
-            const summary =
-              typeof latest?.summary === "string" && latest.summary.trim()
-                ? latest.summary.trim()
-                : undefined;
+            const mainSummary =
+              typeof (latest as any)?.main_summary === "string" && (latest as any)?.main_summary?.trim()
+                ? ((latest as any)?.main_summary as string).trim()
+                : typeof latest?.summary === "string" && latest.summary.trim()
+                  ? latest.summary.trim()
+                  : undefined;
+            const badgeText =
+              typeof (latest as any)?.badge_text === "string" && (latest as any)?.badge_text?.trim()
+                ? ((latest as any)?.badge_text as string).trim()
+                : null;
+            const extraDetails =
+              Array.isArray((latest as any)?.extra_details) && (latest as any)?.extra_details.length
+                ? ((latest as any)?.extra_details as string[]).filter(
+                    (s) => typeof s === "string" && s.trim().length > 0
+                  )
+                : [];
             const sender =
               typeof keyFields.sender === "string" && keyFields.sender.trim()
                 ? (keyFields.sender as string).trim()
@@ -327,9 +472,10 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
               typeof keyFields.action_description === "string" && keyFields.action_description.trim()
                 ? (keyFields.action_description as string).trim()
                 : null;
-            const categorySuggestionPath = Array.isArray((latest as any)?.category_suggestion?.path)
-              ? ((latest as any)?.category_suggestion?.path as string[]).filter(Boolean).join(" / ")
-              : null;
+            const categorySuggestionSlug =
+              typeof (latest as any)?.category_suggestion?.slug === "string"
+                ? ((latest as any)?.category_suggestion?.slug as string)
+                : null;
             const followup =
               typeof (latest as any)?.key_fields?.follow_up === "string" &&
               ((latest as any)?.key_fields?.follow_up as string).trim()
@@ -346,15 +492,18 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
               category_path: buildPath(doc.category_id ?? undefined),
               tasks: tasksByDoc.get(doc.id) ?? [],
               created_at: doc.created_at,
-              summary,
               sender,
               topic,
               amount,
               due_date: due,
               action_required: actionRequired,
               action_text: actionText,
-              category_suggestion: categorySuggestionPath,
+              category_suggestion_slug: categorySuggestionSlug,
               followup_note: followup,
+              summary: mainSummary,
+              main_summary: mainSummary,
+              badge_text: badgeText,
+              extra_details: extraDetails,
             };
           }) ?? [];
 
@@ -411,10 +560,14 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
   const isHome = mode === "home";
   const visibleRows = isHome ? rows.filter((r) => !hiddenDocIds.has(r.id)) : rows;
   const openRows = isHome
-    ? visibleRows.filter((r) => (r.tasks ?? []).some((t) => t.status !== "done"))
+    ? visibleRows.filter(
+        (r) => r.status === "done" && (r.tasks ?? []).some((t) => t.status !== "done")
+      )
     : visibleRows;
   const readyRows = isHome
-    ? visibleRows.filter((r) => !(r.tasks ?? []).some((t) => t.status !== "done"))
+    ? visibleRows.filter(
+        (r) => r.status === "done" && !(r.tasks ?? []).some((t) => t.status !== "done")
+      )
     : [];
 
   const renderTable = (
@@ -423,10 +576,10 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
   ) => (
     <table className="pit-table">
       <thead>
-          <tr>
-            <th style={{ textAlign: "left" }}>Title</th>
-            <th style={{ textAlign: "left" }}>Summary</th>
-            <th style={{ minWidth: 300, textAlign: "left" }}>Actions</th>
+        <tr>
+          <th style={{ textAlign: "left" }}>Title</th>
+          <th style={{ textAlign: "left" }}>Summary</th>
+          <th style={{ minWidth: 300, textAlign: "left" }}>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -453,32 +606,28 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
             const pendingTasks = row.tasks?.filter((t) => t.status !== "done") ?? [];
             const doneTasks = row.tasks?.filter((t) => t.status === "done") ?? [];
             const isNoTaskRow = (row.tasks?.length ?? 0) === 0 && opts?.noTasksSection;
-            const gist = buildGist(row.summary);
+            const gist = buildGist(row.main_summary || row.summary);
             const isSummaryExpanded = expandedSummaries.has(row.id);
+            const dueBadge = computeDueBadge(row, pendingTasks);
             const primaryAction = pendingTasks.length
               ? `${pendingTasks.length} open task${pendingTasks.length > 1 ? "s" : ""}`
-              : row.action_required
-              ? row.due_date
-                ? `Action needed by ${row.due_date}`
-                : "Action needed"
               : "No action required";
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
-            if (pendingTasks.length > 0) {
-              // Tasks are the source of truth; keep badges minimal
-              if (row.followup_note) badges.push({ label: row.followup_note, tone: "muted" });
-            } else if (row.action_required) {
-              const dueBadge =
-                row.due_date && !Number.isNaN(new Date(row.due_date).getTime())
-                  ? { label: `Due ${row.due_date}`, tone: "info" as const }
-                  : { label: "Action needed", tone: "warn" as const };
+            const badgeText =
+              typeof row.badge_text === "string" ? row.badge_text.trim() : "";
+            const isNullishBadge =
+              badgeText === "" ||
+              badgeText.toLowerCase() === "null" ||
+              badgeText.toLowerCase() === "undefined";
+            if (!isNullishBadge && badgeText) {
+              badges.push({ label: badgeText, tone: "info" });
+            } else if (dueBadge) {
               badges.push(dueBadge);
-              if (row.followup_note) badges.push({ label: row.followup_note, tone: "muted" });
-            } else {
-              if (row.followup_note) {
-                badges.push({ label: row.followup_note, tone: "muted" });
-              } else {
-                badges.push({ label: "Info only", tone: "muted" });
-              }
+            }
+            if (row.followup_note) {
+              badges.push({ label: row.followup_note, tone: "muted" });
+            } else if (!dueBadge && !row.badge_text) {
+              badges.push({ label: "Info only", tone: "muted" });
             }
             // Deduplicate badges by label to avoid duplicates
             const seen = new Set<string>();
@@ -488,14 +637,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
               return true;
             });
             const currentCategory = row.category_path ? getLastSegment(row.category_path) : null;
-            if (row.category_suggestion) {
-              const suggestedSegment = getLastSegment(row.category_suggestion);
-              if (!currentCategory || suggestedSegment !== currentCategory) {
-                uniqBadges.push({ label: `Suggested: ${row.category_suggestion}`, tone: "muted" });
-              }
-            }
-            if (row.followup_note)
-              uniqBadges.push({ label: row.followup_note, tone: "muted" });
+            const suggestedSegment = row.category_suggestion_slug
+              ? slugToLabel(row.category_suggestion_slug)
+              : null;
 
             return (
               <tr key={row.id}>
@@ -598,7 +742,8 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                     ) : gist ? (
                       <>
                         <span>{gist}</span>
-                        {row.summary && (
+                        {buildDetailBullets(row.main_summary || row.summary, row.extra_details, pendingTasks.map((t) => t.title)).length >
+                          0 && (
                           <>
                             <button
                               type="button"
@@ -613,25 +758,25 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                                   return next;
                                 })
                               }
-                              className="text-xs self-start"
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                                padding: "2px 4px",
-                                color: "rgba(0,0,0,0.65)",
-                              }}
-                              aria-expanded={isSummaryExpanded}
-                            >
-                              {isSummaryExpanded ? "Hide details" : "Show details"}
-                              <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
-                                {isSummaryExpanded ? "▾" : "▸"}
-                              </span>
+                            className="text-xs self-start"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              padding: "2px 4px",
+                              color: "rgba(0,0,0,0.65)",
+                            }}
+                            aria-expanded={isSummaryExpanded}
+                          >
+                            {isSummaryExpanded ? "Hide additional details" : "Show additional details"}
+                            <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
+                              {isSummaryExpanded ? "▴" : "▾"}
+                            </span>
                             </button>
                             {isSummaryExpanded && (
                               <div className="pit-subtitle text-xs" style={{ lineHeight: 1.5, color: "rgba(0,0,0,0.75)" }}>
                                 <ul style={{ paddingLeft: "18px", margin: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
-                                  {row.summary.split(/(?<=[.!?])\s+/).map((bullet, idx) => (
+                                  {buildDetailBullets(row.main_summary || row.summary, row.extra_details, pendingTasks.map((t) => t.title)).map((bullet, idx) => (
                                     <li key={`${row.id}-bullet-${idx}`} style={{ listStyleType: "disc" }}>
                                       {bullet}
                                     </li>
@@ -648,9 +793,11 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                   </div>
                 </td>
                 <td className="align-top text-left">
-                    <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-2">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="text-sm font-medium">{primaryAction}</div>
+                      <div className="text-xs font-medium" style={{ color: "rgba(0,0,0,0.65)" }}>
+                        {primaryAction}
+                      </div>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
@@ -698,6 +845,35 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                         )}
                       </div>
                     </div>
+                    {doneTasks.length > 0 && (
+                      <button
+                        onClick={() =>
+                          setExpandedCompleted((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(row.id)) {
+                              next.delete(row.id);
+                            } else {
+                              next.add(row.id);
+                            }
+                            return next;
+                          })
+                        }
+                        className="text-xs self-start"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          padding: "2px 4px",
+                          color: "rgba(0,0,0,0.6)",
+                        }}
+                        aria-expanded={expandedCompleted.has(row.id)}
+                      >
+                        <span>Completed ({doneTasks.length})</span>
+                        <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
+                          {expandedCompleted.has(row.id) ? "▾" : "▸"}
+                        </span>
+                      </button>
+                    )}
                     <div className="flex flex-col gap-2">
                       {isNoTaskRow
                         ? null
@@ -706,7 +882,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               key={t.id}
                               style={{
                                 display: "flex",
-                                alignItems: "center",
+                                alignItems: "flex-start",
                                 justifyContent: "space-between",
                                 gap: "8px",
                                 padding: "12px 14px",
@@ -722,139 +898,115 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                             >
                               <span className="pit-subtitle text-xs" style={{ lineHeight: 1.4 }}>
                                 {t.title}
-                                {t.due_date ? ` · due ${t.due_date}` : ""}
+                                {t.due_date ? (
+                                  <>
+                                    {" · "}
+                                    <strong style={{ fontWeight: 700 }}>
+                                      Frist {formatDate(t.due_date)}
+                                    </strong>
+                                  </>
+                                ) : (
+                                  ""
+                                )}
                               </span>
-                              <button
-                                onClick={() => handleMarkClick(t)}
-                                disabled={busyRow === row.id}
-                                aria-label="Mark done"
-                                style={{
-                                  width: 28,
-                                  height: 28,
-                                  borderRadius: 8,
-                                  background: flashingComplete.has(t.id)
-                                    ? "rgba(0,200,120,0.08)"
-                                    : "transparent",
-                                  border: "1px solid rgba(0,0,0,0.15)",
-                                  padding: 4,
-                                  lineHeight: 1,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  cursor: "pointer",
-                                  opacity: busyRow === row.id ? 0.6 : 1,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                <span
-                                  aria-hidden
+                              <div className="flex flex-col items-end gap-2" style={{ flexShrink: 0 }}>
+                                <button
+                                  onClick={() => handleMarkClick(t)}
+                                  disabled={busyRow === row.id}
+                                  aria-label="Mark done"
                                   style={{
-                                    display: "block",
-                                    width: 16,
-                                    height: 16,
-                                    borderRadius: 4,
-                                    border: flashingComplete.has(t.id)
-                                      ? "2px solid #00a86b"
-                                      : "2px solid #888",
-                                    color: "#00a86b",
-                                    textAlign: "center",
-                                    lineHeight: "12px",
+                                    width: 28,
+                                    height: 28,
+                                    borderRadius: 8,
+                                    background: flashingComplete.has(t.id)
+                                      ? "rgba(0,200,120,0.08)"
+                                      : "transparent",
+                                    border: "1px solid rgba(0,0,0,0.15)",
+                                    padding: 4,
+                                    lineHeight: 1,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    cursor: "pointer",
+                                    opacity: busyRow === row.id ? 0.6 : 1,
                                   }}
                                 >
-                                  {flashingComplete.has(t.id) ? "✓" : ""}
-                                </span>
-                              </button>
-                            </div>
-                          ))}
-                      {doneTasks.length > 0 && expandedCompleted.has(row.id) && (
-                        <div className="flex flex-col gap-2">
-                          {doneTasks.map((t) => (
-                            <div
-                              key={t.id}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
-                                gap: "8px",
-                                padding: "12px 14px",
-                                border: "1px solid rgba(0,0,0,0.08)",
-                                borderRadius: "12px",
-                                background: recentlyDone.has(t.id)
-                                  ? "rgba(0,200,120,0.08)"
-                                  : "rgba(0,0,0,0.02)",
-                                width: "100%",
-                                minWidth: "260px",
-                                flex: "1 1 auto",
-                              }}
-                            >
-                              <span
-                                className="pit-subtitle text-xs"
-                                style={{ lineHeight: 1.4, color: "rgba(0,0,0,0.7)" }}
-                              >
-                                {t.title}
-                                {t.due_date ? ` · due ${t.due_date}` : ""}
-                                {" · done"}
-                              </span>
-                              <div
-                                aria-label="Task complete"
-                                style={{
-                                  width: 28,
-                                  height: 28,
-                                  borderRadius: 8,
-                                  border: "1px solid rgba(0,0,0,0.15)",
-                                  padding: 4,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  flexShrink: 0,
-                                  background: "transparent",
-                                  cursor: "pointer",
-                                }}
-                                onClick={() => handleMarkClick(t)}
-                              >
-                                <span style={{ color: "#00a86b", fontWeight: 700, fontSize: "18px" }}>
-                                  ✓
-                                </span>
+                                  <span
+                                    aria-hidden
+                                    style={{
+                                      display: "block",
+                                      width: 16,
+                                      height: 16,
+                                      borderRadius: 4,
+                                      border: flashingComplete.has(t.id)
+                                        ? "2px solid #00a86b"
+                                        : "2px solid #888",
+                                      color: "#00a86b",
+                                      textAlign: "center",
+                                      lineHeight: "12px",
+                                    }}
+                                  >
+                                    {flashingComplete.has(t.id) ? "✓" : ""}
+                                  </span>
+                                </button>
                               </div>
                             </div>
                           ))}
-                        </div>
-                      )}
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        {doneTasks.length > 0 && (
-                          <button
-                            onClick={() =>
-                              setExpandedCompleted((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(row.id)) {
-                                  next.delete(row.id);
-                                } else {
-                                  next.add(row.id);
-                                }
-                                return next;
-                              })
-                            }
-                            className="text-xs self-start"
+                    {doneTasks.length > 0 && expandedCompleted.has(row.id) && (
+                      <div className="flex flex-col gap-2">
+                        {doneTasks.map((t) => (
+                          <div
+                            key={t.id}
                             style={{
-                              display: "inline-flex",
+                              display: "flex",
                               alignItems: "center",
-                              gap: "6px",
-                              padding: "2px 4px",
-                              color: "rgba(0,0,0,0.6)",
+                              justifyContent: "space-between",
+                              gap: "8px",
+                              padding: "12px 14px",
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              borderRadius: "12px",
+                              background: recentlyDone.has(t.id)
+                                ? "rgba(0,200,120,0.08)"
+                                : "rgba(0,0,0,0.02)",
+                              width: "100%",
+                              minWidth: "260px",
+                              flex: "1 1 auto",
                             }}
-                            aria-expanded={expandedCompleted.has(row.id)}
                           >
-                            <span>Completed ({doneTasks.length})</span>
-                            <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
-                              {expandedCompleted.has(row.id) ? "▾" : "▸"}
+                            <span
+                              className="pit-subtitle text-xs"
+                              style={{ lineHeight: 1.4, color: "rgba(0,0,0,0.7)" }}
+                            >
+                              {t.title}
+                              {t.due_date ? ` · Frist ${formatDate(t.due_date)}` : ""}
+                              {" · done"}
                             </span>
-                          </button>
-                        )}
+                            <div
+                              aria-label="Task complete"
+                              style={{
+                                width: 28,
+                                height: 28,
+                                borderRadius: 8,
+                                border: "1px solid rgba(0,0,0,0.15)",
+                                padding: 4,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                flexShrink: 0,
+                                background: "transparent",
+                                cursor: "pointer",
+                              }}
+                              onClick={() => handleMarkClick(t)}
+                            >
+                              <span style={{ color: "#00a86b", fontWeight: 700, fontSize: "18px" }}>
+                                ✓
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div />
-                    </div>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -1004,6 +1156,18 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
     }, 500);
   };
 
+  const handleDeleteTask = async (taskId: string) => {
+    try {
+      const supabase = supabaseBrowser();
+      const { error } = await supabase.from("tasks").delete().eq("id", taskId);
+      if (error) throw error;
+      fetchDocs(false);
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Failed to delete task");
+    }
+  };
+
   const handleCategoryChange = async (row: TableRow, newCategoryId: string | null) => {
     setBusyRow(row.id);
     try {
@@ -1084,6 +1248,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                 Needs your attention
               </h3>
             </div>
+            <p className="pit-subtitle text-xs" style={{ color: "rgba(0,0,0,0.65)" }}>
+              Documents with open tasks or deadlines.
+            </p>
             <div className="w-full overflow-x-auto">
               {renderTable(openRows, { emptyMessage: "No documents with open tasks." })}
             </div>

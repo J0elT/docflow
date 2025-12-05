@@ -1,0 +1,8 @@
+packages:
+  - "**"
+
+# Allow native builds without interactive approval prompts.
+onlyBuiltDependencies:
+  - "@napi-rs/canvas"
+  - canvas
+  - esbuild

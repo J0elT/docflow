@@ -19,6 +19,7 @@ export default function Home() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
 
   const loadUser = useCallback(async () => {
     setLoading(true);
@@ -149,11 +150,18 @@ export default function Home() {
         </header>
 
         <section className="pit-card">
-          <UploadForm onUploaded={() => setRefreshKey((k) => k + 1)} />
+          <UploadForm
+            processing={processing}
+            onUploaded={() => setRefreshKey((k) => k + 1)}
+          />
         </section>
 
         <section>
-          <DocumentTable refreshKey={refreshKey} mode="home" />
+          <DocumentTable
+            refreshKey={refreshKey}
+            mode="home"
+            onProcessingChange={setProcessing}
+          />
         </section>
       </main>
       <nav
