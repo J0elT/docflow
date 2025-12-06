@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps */
 
 import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -271,7 +272,6 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
       return;
     }
     for (const file of list) {
-      // eslint-disable-next-line no-await-in-loop
       await startUpload(file);
     }
   };

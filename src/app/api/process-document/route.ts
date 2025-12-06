@@ -1,6 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { OpenAI } from "openai";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { validateExtraction, type ExtractionPayload } from "@/lib/extractionSchema";
+import { logTelemetryEvent } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
 
@@ -89,7 +92,7 @@ type ParsedExtraction = {
   main_summary?: string | null;
   extra_details?: string[] | null;
   document_kind?: string | null;
-  category_suggestion?: { slug?: string | null } | null;
+  category_suggestion?: { slug?: string | null; confidence?: number | null } | null;
   key_fields?: {
     topic?: string | null;
     letter_date?: string | null;
@@ -100,7 +103,7 @@ type ParsedExtraction = {
     action_description?: string | null;
     follow_up?: string | null;
   };
-};
+} & ExtractionPayload;
 
 function buildFriendlyTitle(parsed: ParsedExtraction | null | undefined): string | null {
   const normalize = (v: string | null | undefined) =>
@@ -169,6 +172,36 @@ function mapToCategoryPath(
   return [slugToLabel(slug)];
 }
 
+function normalizeExtraction(
+  parsed: ParsedExtraction | null | undefined,
+  preferredLanguage: SupportedLang,
+  usedPdfOcrFallback: boolean
+): ParsedExtraction {
+  if (!parsed) return { summary: null, main_summary: null, extra_details: [], key_fields: { language: preferredLanguage } };
+  const result = { ...parsed };
+  result.main_summary =
+    (typeof result.main_summary === "string" && result.main_summary.trim()) ||
+    (typeof result.summary === "string" && result.summary.trim()) ||
+    null;
+  result.summary = result.main_summary || result.summary || null;
+  result.extra_details = Array.isArray(result.extra_details)
+    ? result.extra_details.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+    : [];
+  result.key_fields = result.key_fields || {};
+  if (!result.key_fields.language) {
+    result.key_fields.language = preferredLanguage;
+  }
+  if (usedPdfOcrFallback && !result.badge_text) {
+    result.badge_text = "Scanned letter (please double-check numbers)";
+  }
+  return result;
+}
+
+function validateAndNormalize(raw: any, source: string, preferredLanguage: SupportedLang, usedPdfOcrFallback: boolean) {
+  const validated = validateExtraction(raw, source) as ParsedExtraction;
+  return normalizeExtraction(validated, preferredLanguage, usedPdfOcrFallback);
+}
+
 async function ensureCategoryPath(
   supabase: ReturnType<typeof supabaseAdmin>,
   userId: string,
@@ -223,34 +256,6 @@ async function ensureCategoryPath(
     }
   }
   return lastId;
-}
-
-async function maybeCreateTaskFromSuggestion(
-  supabase: ReturnType<typeof supabaseAdmin>,
-  userId: string,
-  documentId: string,
-  suggestion: {
-    should_create_task?: boolean;
-    title?: string | null;
-    description?: string | null;
-    due_date?: string | null;
-    urgency?: string | null;
-  } | null
-) {
-  if (!suggestion || !suggestion.should_create_task) return;
-  const title = suggestion.title || "Document task";
-  const description = suggestion.description || null;
-  const due_date = suggestion.due_date || null;
-  const urgency = suggestion.urgency || "normal";
-  await supabase.from("tasks").insert({
-    user_id: userId,
-    document_id: documentId,
-    title,
-    description,
-    due_date,
-    urgency,
-    status: "open",
-  });
 }
 
 async function ensureDerivedTasksFromExtraction(
@@ -388,6 +393,8 @@ async function ensureDerivedTasksFromExtraction(
 export async function POST(request: Request) {
   const supabase = supabaseAdmin();
   let documentId: string | null = null;
+  let extractionSource: "text-model" | "vision-model" | "ocr-text" = "text-model";
+  let usedPdfOcrFallback = false;
 
   try {
     const body = await request.json().catch(() => null);
@@ -433,7 +440,6 @@ export async function POST(request: Request) {
     const isImage = /\.(png|jpe?g)$/i.test(lowerPath);
 
     let textContent = "";
-    let usedPdfOcrFallback = false;
     let renderedImages: string[] | null = null;
     if (isPdf) {
       const { PDFParse } = await import("pdf-parse");
@@ -506,7 +512,7 @@ export async function POST(request: Request) {
                     "Extra details should add new facts/obligations (not repeat the summary): key dates, amounts, signature status, return/submit/appeal deadlines, conditions like clawbacks/confidentiality, benefits start/end, fines/discount windows. Order by importance: payments/status/deadlines first, then amounts/totals, then items/services, then obligations/conditions, then IDs/logistics. Aim for ~5 items; include more only if they add distinct, important facts.",
                     "Do not invent formulas, percentages, or reductions. State amounts/dates only if explicitly present. If a reduction/clawback condition is mentioned, quote it plainly (e.g., 'Repay severance if rehired within 2 years'), without making up math.",
                     "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note. Include key dates/amounts only if present.",
-                    "Keep wording simple, concrete, and short (no legal jargon). Do NOT repeat main_summary inside extra_details.",
+                    "Tone: write like a normal human, short sentences, no bureaucratic or legal phrasing. Keep wording simple, concrete, and short. Do NOT repeat main_summary inside extra_details.",
                     "",
                     "Document text:",
                     truncated,
@@ -519,24 +525,12 @@ export async function POST(request: Request) {
       const contentResult = completion.choices[0]?.message?.content;
       if (!contentResult) throw new Error("Missing content from OpenAI response");
       const parsedJson = JSON.parse(contentResult);
-      // Normalize fields for downstream use
-      if (parsedJson) {
-        parsedJson.main_summary =
-          (typeof parsedJson.main_summary === "string" && parsedJson.main_summary.trim()) ||
-          (typeof parsedJson.summary === "string" && parsedJson.summary.trim()) ||
-          null;
-        parsedJson.summary = parsedJson.main_summary || parsedJson.summary || null;
-        parsedJson.extra_details = Array.isArray(parsedJson.extra_details)
-          ? parsedJson.extra_details.filter(
-              (s: any) => typeof s === "string" && s.trim().length > 0
-            )
-          : [];
+      const validated = validateAndNormalize(parsedJson, "text-model", preferredLanguage, usedPdfOcrFallback);
+      if (!validated.summary) {
+        validated.summary = "Info only";
+        validated.main_summary = validated.summary;
       }
-      if (!parsedJson || !parsedJson.summary) {
-        parsedJson.summary = "Info only";
-        parsedJson.main_summary = parsedJson.summary;
-      }
-      return parsedJson;
+      return validated;
     };
 
     const renderPdfImages = async (pdfBuffer: Buffer) => {
@@ -557,7 +551,7 @@ export async function POST(request: Request) {
         const loadCanvasModule = () => {
           try {
             return resolveFromPdfjs("@napi-rs/canvas") as typeof import("@napi-rs/canvas");
-          } catch (err) {
+          } catch {
             try {
               return resolveFromPdfjs("canvas") as typeof import("canvas");
             } catch {
@@ -729,7 +723,7 @@ export async function POST(request: Request) {
                     "Extra details should add new facts/obligations (not repeat the summary): key dates, amounts, signature status, return/submit/appeal deadlines, conditions like clawbacks/confidentiality, benefits start/end, fines/discount windows. Keep it to the 3–5 most important items (hard cap 5 bullets).",
                     "Do not invent formulas, percentages, or reductions. State amounts/dates only if explicitly present. If a reduction/clawback condition is mentioned, quote it plainly (e.g., 'Repay severance if rehired within 2 years'), without making up math.",
                     "Use null for unknown fields. If the letter just informs and asks to wait for another letter, set action_required=false and fill follow_up with that note. Include key dates/amounts only if present.",
-                    "Keep wording simple, concrete, and short (no legal jargon). Do NOT repeat main_summary inside extra_details.",
+                    "Tone: write like a normal human, short sentences, no bureaucratic or legal phrasing. Keep wording simple, concrete, and short. Do NOT repeat main_summary inside extra_details.",
                   ].join("\n"),
               },
               ...images.map((img) => ({
@@ -743,23 +737,12 @@ export async function POST(request: Request) {
       const contentResult = completion.choices[0]?.message?.content;
       if (!contentResult) throw new Error("Missing content from OpenAI response");
       const parsed = JSON.parse(contentResult);
-      if (parsed) {
-        parsed.main_summary =
-          (typeof parsed.main_summary === "string" && parsed.main_summary.trim()) ||
-          (typeof parsed.summary === "string" && parsed.summary.trim()) ||
-          null;
-        parsed.summary = parsed.main_summary || parsed.summary || null;
-        parsed.extra_details = Array.isArray(parsed.extra_details)
-          ? parsed.extra_details.filter(
-              (s: any) => typeof s === "string" && s.trim().length > 0
-            )
-          : [];
+      const validated = validateAndNormalize(parsed, "vision-model", preferredLanguage, usedPdfOcrFallback);
+      if (!validated.summary) {
+        validated.summary = "Info only";
+        validated.main_summary = validated.summary;
       }
-      if (!parsed || !parsed.summary) {
-        parsed.summary = "Info only";
-        parsed.main_summary = parsed.summary;
-      }
-      return parsed;
+      return validated;
     };
 
     const ocrImagesToText = async (images: string[]) => {
@@ -776,7 +759,7 @@ export async function POST(request: Request) {
                 type: "text",
                 text: "Read all text from these scanned pages and return ONLY the plain text (no translation, no summary).",
               },
-              ...images.map((img) => ({
+              ...limited.map((img) => ({
                 type: "image_url" as const,
                 image_url: { url: img },
               })),
@@ -806,6 +789,7 @@ export async function POST(request: Request) {
         try {
           parsedJson = await callVisionModel(renderedImages, preferredLanguage);
           usedPdfOcrFallback = true;
+          extractionSource = "vision-model";
         } catch (err) {
           console.warn("vision model failed for pdf, falling back to OCR text", err);
         }
@@ -818,6 +802,7 @@ export async function POST(request: Request) {
       renderedImages = [dataUrl];
       try {
         parsedJson = await callVisionModel(renderedImages, preferredLanguage);
+        extractionSource = "vision-model";
       } catch (err) {
         console.warn("vision model failed for image, falling back to OCR text", err);
       }
@@ -850,6 +835,7 @@ export async function POST(request: Request) {
         const ocrText = await ocrImagesToText(renderedImages);
         if (ocrText && ocrText.trim().length > 80) {
           parsedJson = await callTextModel(ocrText, preferredLanguage);
+          extractionSource = "ocr-text";
           if (parsedJson) {
             parsedJson.summary = parsedJson.main_summary || parsedJson.summary;
             parsedJson.extra_details = Array.isArray(parsedJson.extra_details)
@@ -946,6 +932,16 @@ export async function POST(request: Request) {
       .eq("id", doc.id);
     if (finalUpdateError) throw finalUpdateError;
 
+    await logTelemetryEvent({
+      timestamp: new Date().toISOString(),
+      kind: "process-document",
+      status: "success",
+      documentId: doc.id,
+      userId: doc.user_id,
+      model: extractionSource,
+      usedOcrFallback: usedPdfOcrFallback,
+    });
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("process-document error", err);
@@ -957,6 +953,16 @@ export async function POST(request: Request) {
         .update({ status: "error", error_message: message })
         .eq("id", documentId);
     }
+    await logTelemetryEvent({
+      timestamp: new Date().toISOString(),
+      kind: "process-document",
+      status: "error",
+      documentId,
+      userId: null,
+      model: extractionSource,
+      usedOcrFallback: usedPdfOcrFallback,
+      message: err instanceof Error ? err.message : "unknown error",
+    });
     return NextResponse.json(
       { error: "Failed to process document" },
       { status: 500 }

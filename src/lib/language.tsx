@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 export type LanguageCode = "de" | "en" | "ro" | "tr" | "fr" | "es" | "ar";
 
@@ -379,14 +379,15 @@ type Ctx = {
 const LanguageContext = createContext<Ctx | null>(null);
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLang] = useState<LanguageCode>("de");
-
-  useEffect(() => {
-    const stored = typeof window !== "undefined" ? localStorage.getItem("docflow-lang") : null;
-    if (stored && SUPPORTED.includes(stored as LanguageCode)) {
-      setLang(stored as LanguageCode);
+  const [lang, setLang] = useState<LanguageCode>(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("docflow-lang");
+      if (stored && SUPPORTED.includes(stored as LanguageCode)) {
+        return stored as LanguageCode;
+      }
     }
-  }, []);
+    return "de";
+  });
 
   const updateLang = (code: LanguageCode) => {
     setLang(code);
