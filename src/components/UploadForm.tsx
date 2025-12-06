@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import uploadIcon from "../../images/upload-unselected.png";
 import copyIcon from "../../images/copy.png";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { useLanguage } from "@/lib/language";
 
 type Props = {
   onUploaded: () => void;
@@ -27,6 +28,7 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
   const pasteTargetRef = useRef<HTMLTextAreaElement | null>(null);
   const [pasteHint, setPasteHint] = useState<string | null>(null);
   const [pendingProcessing, setPendingProcessing] = useState(false);
+  const { lang, t } = useLanguage();
 
   useEffect(() => {
     if (processing) {
@@ -179,12 +181,12 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
         allowedTypes.includes(file.type) ||
         /\.(pdf|txt|doc|docx|png|jpe?g)$/i.test(file.name || "");
       if (!isAllowedType) {
-        alert("Unsupported file type. Please upload PDF, DOC, DOCX, TXT, PNG, or JPEG.");
+        alert(t("unsupportedType"));
         return;
       }
 
       if (file.size > MAX_INPUT_BYTES) {
-        alert("File is too large. Please keep uploads under 25MB.");
+        alert(t("fileTooLarge"));
         return;
       }
 
@@ -200,7 +202,7 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
             return;
           }
           if (normalized.size > MAX_OUTPUT_BYTES) {
-            alert("Image is too large after processing. Please use a smaller image.");
+            alert(t("imageTooLarge"));
             setLoading(false);
             setDragging(false);
             return;
@@ -214,7 +216,7 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
         error: userError,
       } = await supabase.auth.getUser();
       if (userError) throw userError;
-      if (!user) throw new Error("You must be logged in to upload.");
+      if (!user) throw new Error(t("loginRequired"));
 
         const path = `${user.id}/${crypto.randomUUID()}-${fileToUpload.name}`;
         const { error: uploadError } = await supabase.storage
@@ -240,7 +242,7 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
         fetch("/api/process-document", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ documentId: inserted.id }),
+          body: JSON.stringify({ documentId: inserted.id, preferredLanguage: lang }),
         }).catch((err) => console.error("process-document trigger failed", err));
 
         onUploaded();
@@ -253,19 +255,19 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
         if (inputRef.current) inputRef.current.value = "";
       }
     },
-    [loading, onUploaded]
+    [loading, onUploaded, lang, t]
   );
 
   const handleFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
     const list = Array.from(files);
     if (list.length > MAX_FILES_AT_ONCE) {
-      alert(`Please upload up to ${MAX_FILES_AT_ONCE} files at a time.`);
+      alert(t("maxFiles", { count: MAX_FILES_AT_ONCE }));
       return;
     }
     const totalBytes = list.reduce((sum, f) => sum + f.size, 0);
     if (totalBytes > MAX_TOTAL_BYTES) {
-      alert("Total upload too large. Please upload a smaller batch.");
+      alert(t("batchTooLarge"));
       return;
     }
     for (const file of list) {
@@ -387,7 +389,7 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
               color: "rgba(0,0,0,0.5)",
             }}
           >
-            paste
+            {t("paste")}
           </span>
         </button>
         <div className="flex flex-col items-center gap-2 text-center">
@@ -401,12 +403,12 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
           />
           <span className="pit-title" style={{ fontSize: "16px" }}>
             {loading
-              ? "Uploading..."
+              ? t("uploadUploading")
               : processing || pendingProcessing
-              ? "Processing upload..."
-              : "Drop files here or click to choose"}
+              ? t("uploadProcessing")
+              : t("uploadDrop")}
           </span>
-          <span className="pit-subtitle">PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.</span>
+          <span className="pit-subtitle">{t("uploadHint")}</span>
         </div>
         <input
           ref={inputRef}

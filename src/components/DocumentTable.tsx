@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { getLocaleForLanguage, useLanguage } from "@/lib/language";
 import { createPortal } from "react-dom";
 import viewIcon from "../../images/view.png";
 import binIcon from "../../images/bin.png";
@@ -99,6 +100,7 @@ export default function DocumentTable({
   mode = "files",
   onProcessingChange,
 }: Props) {
+  const { lang, t } = useLanguage();
   const [rows, setRows] = useState<TableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -251,14 +253,22 @@ const getTodayStart = () => {
   return d.getTime();
 };
 
-const formatDate = (iso?: string | null) => {
+const formatDate = (iso: string | null | undefined, lang: string) => {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return d.toLocaleDateString(getLocaleForLanguage(lang as any), {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
 };
 
-const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
+const computeDueBadge = (
+  row: TableRow,
+  pendingTasks: TaskRow[],
+  t: (key: string, vars?: Record<string, string | number>) => string
+) => {
   const hasAction = row.action_required || (pendingTasks ?? []).length > 0;
   if (!hasAction) return null;
 
@@ -276,15 +286,18 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
   const today = getTodayStart();
   const daysDiff = Math.floor((due - today) / ONE_DAY);
   if (daysDiff < 0)
-    return { label: `Frist abgelaufen (${Math.abs(daysDiff)} Tage)`, tone: "warn" as const };
-  if (daysDiff === 0) return { label: "Frist heute", tone: "warn" as const };
-  if (daysDiff === 1) return { label: "Frist in 1 Tag", tone: "info" as const };
-  if (daysDiff <= 7) return { label: `Frist in ${daysDiff} Tagen`, tone: "info" as const };
-  return { label: `Frist in ${daysDiff} Tagen`, tone: "muted" as const };
+    return {
+      label: t("dueOverdue", { days: Math.abs(daysDiff) }),
+      tone: "warn" as const,
+    };
+  if (daysDiff === 0) return { label: t("dueToday"), tone: "warn" as const };
+  if (daysDiff === 1) return { label: t("dueInOne"), tone: "info" as const };
+  if (daysDiff <= 7) return { label: t("dueInDays", { days: daysDiff }), tone: "info" as const };
+  return { label: t("dueInDays", { days: daysDiff }), tone: "muted" as const };
 };
 
   const getLastSegment = (path?: string) => {
-    if (!path) return "Uncategorized";
+    if (!path) return t("uncategorized");
     const parts = path.split(" / ").filter(Boolean);
     return parts[parts.length - 1] || path;
   };
@@ -296,7 +309,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
         setLoading(true);
         setError(null);
         timeout = setTimeout(() => {
-          setError((prev) => prev ?? "Taking too long to load documents. Please retry.");
+          setError((prev) => prev ?? t("takingTooLong"));
           setLoading(false);
         }, 6000);
       }
@@ -309,7 +322,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
       if (userError) throw userError;
       if (!user) {
         setUserId(null);
-        setError("Not logged in.");
+        setError(t("notLoggedIn"));
         if (timeout) clearTimeout(timeout);
         setLoading(false);
         return;
@@ -577,9 +590,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
     <table className="pit-table">
       <thead>
         <tr>
-          <th style={{ textAlign: "left" }}>Title</th>
-          <th style={{ textAlign: "left" }}>Summary</th>
-          <th style={{ minWidth: 300, textAlign: "left" }}>Actions</th>
+          <th style={{ textAlign: "left" }}>{t("titleHeader")}</th>
+          <th style={{ textAlign: "left" }}>{t("summaryHeader")}</th>
+          <th style={{ minWidth: 300, textAlign: "left" }}>{t("actionsHeader")}</th>
         </tr>
       </thead>
       <tbody>
@@ -592,13 +605,13 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
         ) : loading ? (
           <tr>
             <td className="pit-muted" colSpan={3}>
-              Loading...
+              {t("loading")}
             </td>
           </tr>
         ) : data.length === 0 ? (
           <tr>
             <td className="pit-muted" colSpan={3}>
-              {opts?.emptyMessage || "No documents yet."}
+              {opts?.emptyMessage || t("noDocs")}
             </td>
           </tr>
         ) : (
@@ -608,10 +621,12 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
             const isNoTaskRow = (row.tasks?.length ?? 0) === 0 && opts?.noTasksSection;
             const gist = buildGist(row.main_summary || row.summary);
             const isSummaryExpanded = expandedSummaries.has(row.id);
-            const dueBadge = computeDueBadge(row, pendingTasks);
+            const dueBadge = computeDueBadge(row, pendingTasks, t);
             const primaryAction = pendingTasks.length
-              ? `${pendingTasks.length} open task${pendingTasks.length > 1 ? "s" : ""}`
-              : "No action required";
+              ? pendingTasks.length === 1
+                ? t("openTasks", { count: pendingTasks.length })
+                : t("openTasksPlural", { count: pendingTasks.length })
+              : t("noActionRequired");
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
             const badgeText =
               typeof row.badge_text === "string" ? row.badge_text.trim() : "";
@@ -627,7 +642,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
             if (row.followup_note) {
               badges.push({ label: row.followup_note, tone: "muted" });
             } else if (!dueBadge && !row.badge_text) {
-              badges.push({ label: "Info only", tone: "muted" });
+              badges.push({ label: t("infoOnly"), tone: "muted" });
             }
             // Deduplicate badges by label to avoid duplicates
             const seen = new Set<string>();
@@ -768,7 +783,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                             }}
                             aria-expanded={isSummaryExpanded}
                           >
-                            {isSummaryExpanded ? "Hide additional details" : "Show additional details"}
+                            {isSummaryExpanded ? t("hideDetails") : t("showDetails")}
                             <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
                               {isSummaryExpanded ? "▴" : "▾"}
                             </span>
@@ -815,8 +830,8 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                             lineHeight: 1,
                             cursor: "pointer",
                           }}
-                          aria-label="Add task"
-                          title="Add task"
+                          aria-label={t("addTask")}
+                          title={t("addTask")}
                         >
                           <span aria-hidden style={{ fontSize: "16px", lineHeight: 1, fontWeight: 600 }}>+</span>
                         </button>
@@ -837,8 +852,8 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               lineHeight: 1,
                               cursor: "pointer",
                             }}
-                            aria-label="Move to files"
-                            title="Move to files"
+                            aria-label={t("moveToFiles")}
+                            title={t("moveToFiles")}
                           >
                             <span aria-hidden style={{ fontSize: "16px", lineHeight: 1, fontWeight: 600 }}>→</span>
                           </button>
@@ -868,7 +883,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                         }}
                         aria-expanded={expandedCompleted.has(row.id)}
                       >
-                        <span>Completed ({doneTasks.length})</span>
+                            <span>{t("completed", { count: doneTasks.length })}</span>
                         <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
                           {expandedCompleted.has(row.id) ? "▾" : "▸"}
                         </span>
@@ -877,9 +892,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                     <div className="flex flex-col gap-2">
                       {isNoTaskRow
                         ? null
-                        : pendingTasks.map((t) => (
+                        : pendingTasks.map((task) => (
                             <div
-                              key={t.id}
+                              key={task.id}
                               style={{
                                 display: "flex",
                                 alignItems: "flex-start",
@@ -888,7 +903,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                                 padding: "12px 14px",
                                 border: "1px solid rgba(0,0,0,0.08)",
                                 borderRadius: "12px",
-                                background: flashingComplete.has(t.id)
+                                background: flashingComplete.has(task.id)
                                   ? "rgba(0,200,120,0.05)"
                                   : "rgba(0,0,0,0.01)",
                                 width: "100%",
@@ -897,12 +912,14 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               }}
                             >
                               <span className="pit-subtitle text-xs" style={{ lineHeight: 1.4 }}>
-                                {t.title}
-                                {t.due_date ? (
+                                {task.title}
+                                {task.due_date ? (
                                   <>
                                     {" · "}
                                     <strong style={{ fontWeight: 700 }}>
-                                      Frist {formatDate(t.due_date)}
+                                      {t("actionNeededBy", {
+                                        date: formatDate(task.due_date, lang) ?? "",
+                                      })}
                                     </strong>
                                   </>
                                 ) : (
@@ -911,14 +928,14 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               </span>
                               <div className="flex flex-col items-end gap-2" style={{ flexShrink: 0 }}>
                                 <button
-                                  onClick={() => handleMarkClick(t)}
+                                  onClick={() => handleMarkClick(task)}
                                   disabled={busyRow === row.id}
                                   aria-label="Mark done"
                                   style={{
                                     width: 28,
                                     height: 28,
                                     borderRadius: 8,
-                                    background: flashingComplete.has(t.id)
+                                    background: flashingComplete.has(task.id)
                                       ? "rgba(0,200,120,0.08)"
                                       : "transparent",
                                     border: "1px solid rgba(0,0,0,0.15)",
@@ -938,7 +955,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                                       width: 16,
                                       height: 16,
                                       borderRadius: 4,
-                                      border: flashingComplete.has(t.id)
+                                      border: flashingComplete.has(task.id)
                                         ? "2px solid #00a86b"
                                         : "2px solid #888",
                                       color: "#00a86b",
@@ -946,7 +963,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                                       lineHeight: "12px",
                                     }}
                                   >
-                                    {flashingComplete.has(t.id) ? "✓" : ""}
+                                    {flashingComplete.has(task.id) ? "✓" : ""}
                                   </span>
                                 </button>
                               </div>
@@ -955,9 +972,9 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                     </div>
                     {doneTasks.length > 0 && expandedCompleted.has(row.id) && (
                       <div className="flex flex-col gap-2">
-                        {doneTasks.map((t) => (
+                        {doneTasks.map((task) => (
                           <div
-                            key={t.id}
+                            key={task.id}
                             style={{
                               display: "flex",
                               alignItems: "center",
@@ -966,7 +983,7 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                               padding: "12px 14px",
                               border: "1px solid rgba(0,0,0,0.08)",
                               borderRadius: "12px",
-                              background: recentlyDone.has(t.id)
+                              background: recentlyDone.has(task.id)
                                 ? "rgba(0,200,120,0.08)"
                                 : "rgba(0,0,0,0.02)",
                               width: "100%",
@@ -977,13 +994,15 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                             <span
                               className="pit-subtitle text-xs"
                               style={{ lineHeight: 1.4, color: "rgba(0,0,0,0.7)" }}
-                            >
-                              {t.title}
-                              {t.due_date ? ` · Frist ${formatDate(t.due_date)}` : ""}
-                              {" · done"}
-                            </span>
-                            <div
-                              aria-label="Task complete"
+                              >
+                                {task.title}
+                              {task.due_date
+                                ? ` · ${t("actionNeededBy", { date: formatDate(task.due_date, lang) ?? "" })}`
+                                : ""}
+                                {" · done"}
+                              </span>
+                              <div
+                                aria-label="Task complete"
                               style={{
                                 width: 28,
                                 height: 28,
@@ -997,8 +1016,8 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                                 background: "transparent",
                                 cursor: "pointer",
                               }}
-                              onClick={() => handleMarkClick(t)}
-                            >
+                                onClick={() => handleMarkClick(task)}
+                              >
                               <span style={{ color: "#00a86b", fontWeight: 700, fontSize: "18px" }}>
                                 ✓
                               </span>
@@ -1242,32 +1261,32 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
     <div className="w-full">
       {isHome ? (
         <div className="flex flex-col gap-4">
-          <div className="pit-subcard flex flex-col gap-3 w-full">
-            <div className="flex items-center justify-between">
-              <h3 className="pit-title" style={{ fontSize: "18px" }}>
-                Needs your attention
-              </h3>
-            </div>
-            <p className="pit-subtitle text-xs" style={{ color: "rgba(0,0,0,0.65)" }}>
-              Documents with open tasks or deadlines.
-            </p>
-            <div className="w-full overflow-x-auto">
-              {renderTable(openRows, { emptyMessage: "No documents with open tasks." })}
-            </div>
-          </div>
-          <div className="pit-subcard flex flex-col gap-3 w-full">
-            <div className="flex items-center justify-between">
-              <h3 className="pit-title" style={{ fontSize: "18px" }}>
-                Ready to file
-              </h3>
-            </div>
-            <div className="w-full overflow-x-auto">
-              {renderTable(readyRows, {
-                noTasksSection: true,
-                emptyMessage: "No documents ready to file.",
-              })}
-            </div>
-          </div>
+              <div className="pit-subcard flex flex-col gap-3 w-full">
+                <div className="flex items-center justify-between">
+                  <h3 className="pit-title" style={{ fontSize: "18px" }}>
+                {t("needsAttentionTitle")}
+                  </h3>
+                </div>
+                <p className="pit-subtitle text-xs" style={{ color: "rgba(0,0,0,0.65)" }}>
+              {t("needsAttentionSubtitle")}
+                </p>
+                <div className="w-full overflow-x-auto">
+              {renderTable(openRows, { emptyMessage: t("noDocsOpen") })}
+                </div>
+              </div>
+              <div className="pit-subcard flex flex-col gap-3 w-full">
+                <div className="flex items-center justify-between">
+                  <h3 className="pit-title" style={{ fontSize: "18px" }}>
+                {t("readyTitle")}
+                  </h3>
+                </div>
+                <div className="w-full overflow-x-auto">
+                  {renderTable(readyRows, {
+                    noTasksSection: true,
+                    emptyMessage: t("noDocsReady"),
+                  })}
+                </div>
+              </div>
         </div>
       ) : (
         <div className="w-full overflow-x-auto">{renderTable(visibleRows)}</div>
@@ -1342,15 +1361,15 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                     />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="pit-subtitle text-xs uppercase tracking-wide">Urgency</span>
+                    <span className="pit-subtitle text-xs uppercase tracking-wide">{t("urgency")}</span>
                     <select
                       className="pit-input"
                       value={taskModal?.urgency ?? "normal"}
                       onChange={(e) => setTaskModal((prev) => (prev ? { ...prev, urgency: e.target.value } : prev))}
                     >
-                      <option value="low">Low</option>
-                      <option value="normal">Normal</option>
-                      <option value="high">High</option>
+                      <option value="low">{t("low")}</option>
+                      <option value="normal">{t("normal")}</option>
+                      <option value="high">{t("high")}</option>
                     </select>
                   </label>
                   <div className="flex justify-end gap-2 pt-2">
@@ -1358,10 +1377,10 @@ const computeDueBadge = (row: TableRow, pendingTasks: TaskRow[]) => {
                       onClick={() => setTaskModal(null)}
                       className="pit-cta pit-cta--secondary text-xs"
                     >
-                      Cancel
+                      {t("cancel")}
                     </button>
                     <button onClick={submitTask} className="pit-cta pit-cta--primary text-xs">
-                      Add task
+                      {t("addTask")}
                     </button>
                   </div>
                 </div>

@@ -10,6 +10,7 @@ import uploadOn from "../../../images/upload-selected.png";
 import uploadOff from "../../../images/upload-unselected.png";
 import folderOn from "../../../images/open-folder-selected.png";
 import folderOff from "../../../images/open-folder-unselected.png";
+import { LanguageProvider, useLanguage } from "@/lib/language";
 
 type Category = {
   id: string;
@@ -17,7 +18,7 @@ type Category = {
   parent_id: string | null;
 };
 
-export default function FilesPage() {
+function FilesContent() {
   const pathname = usePathname();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +30,7 @@ export default function FilesPage() {
   const [uncatCount, setUncatCount] = useState<number>(0);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [filterIds, setFilterIds] = useState<string[] | null | undefined>(undefined);
+  const { lang, setLang, t } = useLanguage();
 
   useEffect(() => {
     const load = async () => {
@@ -123,8 +125,25 @@ export default function FilesPage() {
       <main className="pit-shell">
         <header className="pit-header">
           <div>
-            <p className="pit-title">Files</p>
-            <p className="pit-subtitle">Browse by folder</p>
+            <p className="pit-title">{t("files")}</p>
+            <p className="pit-subtitle">{t("readySubtitle")}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              aria-label="Language"
+              value={lang}
+              onChange={(e) => setLang(e.target.value as any)}
+              className="rounded-md border border-[rgba(0,0,0,0.1)] bg-white/60 px-2 py-1 text-xs"
+              style={{ color: "rgba(0,0,0,0.65)" }}
+            >
+              <option value="de">DE</option>
+              <option value="en">EN</option>
+              <option value="ro">RO</option>
+              <option value="tr">TR</option>
+              <option value="fr">FR</option>
+              <option value="es">ES</option>
+              <option value="ar">AR</option>
+            </select>
           </div>
         </header>
 
@@ -222,13 +241,13 @@ export default function FilesPage() {
       >
         <div
           className="mx-auto flex max-w-4xl items-center justify-around px-6 py-3 text-sm"
-          style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.6)" }}
-        >
-          {[
-            { href: "/", on: uploadOn, off: uploadOff, label: "Home" },
-            { href: "/files", on: folderOn, off: folderOff, label: "Files" },
-          ].map((item) => {
-            const active = pathname === item.href;
+            style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.6)" }}
+          >
+            {[
+              { href: "/", on: uploadOn, off: uploadOff, label: t("home") },
+              { href: "/files", on: folderOn, off: folderOff, label: t("files") },
+            ].map((item) => {
+              const active = pathname === item.href;
             return (
               <Link
                 key={item.href}
@@ -253,5 +272,13 @@ export default function FilesPage() {
         </div>
       </nav>
     </div>
+  );
+}
+
+export default function FilesPage() {
+  return (
+    <LanguageProvider>
+      <FilesContent />
+    </LanguageProvider>
   );
 }

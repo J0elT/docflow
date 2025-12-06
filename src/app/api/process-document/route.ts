@@ -30,6 +30,9 @@ const CATEGORY_OPTIONS = [
   { slug: "sonstiges", label: "Sonstiges" },
 ];
 
+const SUPPORTED_LANGUAGES = ["de", "en", "ro", "tr", "fr", "es", "ar"] as const;
+type SupportedLang = (typeof SUPPORTED_LANGUAGES)[number];
+
 const slugToLabel = (slug: string | null | undefined): string => {
   if (!slug) return "Sonstiges";
   return CATEGORY_OPTIONS.find((c) => c.slug === slug)?.label || "Sonstiges";
@@ -92,6 +95,7 @@ type ParsedExtraction = {
     letter_date?: string | null;
     due_date?: string | null;
     sender?: string | null;
+    language?: string | null;
     action_required?: boolean;
     action_description?: string | null;
     follow_up?: string | null;
@@ -388,6 +392,11 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => null);
     const incomingId = body?.documentId;
+    const preferredLanguage: SupportedLang = SUPPORTED_LANGUAGES.includes(
+      body?.preferredLanguage as SupportedLang
+    )
+      ? (body.preferredLanguage as SupportedLang)
+      : "de";
     if (!incomingId || typeof incomingId !== "string") {
       return NextResponse.json(
         { error: "documentId is required" },
@@ -450,7 +459,7 @@ export async function POST(request: Request) {
     }
     const openai = new OpenAI({ apiKey: openaiKey });
 
-    const callTextModel = async (content: string) => {
+    const callTextModel = async (content: string, preferredLanguage: SupportedLang) => {
       if (!content || content.trim().length === 0) {
         throw new Error(
           "No text extracted from document (possibly scanned or image-only PDF)."
@@ -468,15 +477,15 @@ export async function POST(request: Request) {
                 type: "text",
                 text:
                   [
-                    "You are an assistant that extracts structured info from letters and explains it in simple words.",
+                    `You are an assistant that extracts structured info from letters and explains it in simple words. Use the user's preferred language: ${preferredLanguage}.`,
                     "Return ONLY JSON with this exact shape:",
                     "{",
                     '  "badge_text": "Short chip about the deadline/type, e.g. Widerspruchsfrist bis 06.12.2025 or Zahlungsfrist in 5 Tagen; null if none.",',
-                    '  "main_summary": "1-2 short sentences (<=220 chars) in plain language: what this letter decides, key dates/amounts, and whether more info will come.",',
+                    `  "main_summary": "1-2 short sentences (<=220 chars) in ${preferredLanguage} in plain language: what this letter decides, key dates/amounts, and whether more info will come.",`,
                     '  "extra_details": ["additional bullet 1","additional bullet 2"... up to 5, only if they add new info"],',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
-                    '    "language": "de",',
+                    `    "language": "${preferredLanguage}",`,
                     '    "sender": "...",',
                     '    "topic": "...",',
                     '    "letter_date": "YYYY-MM-DD or null",',
@@ -677,7 +686,7 @@ export async function POST(request: Request) {
       }
     };
 
-    const callVisionModel = async (images: string[]) => {
+    const callVisionModel = async (images: string[], preferredLanguage: SupportedLang) => {
       if (!images.length) throw new Error("No images available for vision OCR.");
       const completion = await openai.chat.completions.create({
         // Use a vision-capable model for OCR + reasoning on scanned docs/images.
@@ -691,15 +700,15 @@ export async function POST(request: Request) {
                 type: "text",
                 text:
                   [
-                    "You are an assistant that extracts structured info from scanned documents (German or English). Perform OCR on the images.",
+                    `You are an assistant that extracts structured info from scanned documents (any language). Perform OCR on the images and respond in ${preferredLanguage}.`,
                     "Return ONLY JSON with this shape:",
                     "{",
                     '  "badge_text": "Short chip about the deadline/type, e.g. Widerspruchsfrist bis 06.12.2025 or Zahlungsfrist in 5 Tagen; null if none.",',
-                    '  "main_summary": "1-2 short sentences (<=220 chars) in plain language: what this letter decides, key dates/amounts, and whether more info will come.",',
+                    `  "main_summary": "1-2 short sentences (<=220 chars) in ${preferredLanguage} in plain language: what this letter decides, key dates/amounts, and whether more info will come.",`,
                     '  "extra_details": ["additional bullet 1","additional bullet 2"... up to 5, only if they add new info"],',
                     '  "document_kind": "letter | invoice | contract | notice | info | other",',
                     '  "key_fields": {',
-                    '    "language": "de",',
+                    `    "language": "${preferredLanguage}",`,
                     '    "sender": "...",',
                     '    "topic": "...",',
                     '    "letter_date": "YYYY-MM-DD or null",',
@@ -765,7 +774,7 @@ export async function POST(request: Request) {
             content: [
               {
                 type: "text",
-                text: "Lies den gesamten Text aus diesen gescannten Seiten (Deutsch) und gib NUR den Klartext zurück, keine Zusammenfassung.",
+                text: "Read all text from these scanned pages and return ONLY the plain text (no translation, no summary).",
               },
               ...images.map((img) => ({
                 type: "image_url" as const,
@@ -787,7 +796,7 @@ export async function POST(request: Request) {
     if (isPdf) {
       try {
         if (textContent && textContent.trim().length >= MIN_TEXT_CHARS) {
-          parsedJson = await callTextModel(textContent);
+          parsedJson = await callTextModel(textContent, preferredLanguage);
         }
       } catch (err) {
         console.warn("text model failed for pdf, falling back to OCR", err);
@@ -795,20 +804,20 @@ export async function POST(request: Request) {
       if (!parsedJson) {
         renderedImages = await renderPdfImages(buffer);
         try {
-          parsedJson = await callVisionModel(renderedImages);
+          parsedJson = await callVisionModel(renderedImages, preferredLanguage);
           usedPdfOcrFallback = true;
         } catch (err) {
           console.warn("vision model failed for pdf, falling back to OCR text", err);
         }
       }
     } else if (textContent && textContent.trim().length > 0) {
-      parsedJson = await callTextModel(textContent);
+      parsedJson = await callTextModel(textContent, preferredLanguage);
     } else if (isImage) {
       const mime = lowerPath.endsWith(".png") ? "image/png" : "image/jpeg";
       const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
       renderedImages = [dataUrl];
       try {
-        parsedJson = await callVisionModel(renderedImages);
+        parsedJson = await callVisionModel(renderedImages, preferredLanguage);
       } catch (err) {
         console.warn("vision model failed for image, falling back to OCR text", err);
       }
@@ -826,6 +835,10 @@ export async function POST(request: Request) {
             (s: any) => typeof s === "string" && s.trim().length > 0
           )
         : [];
+      parsedJson.key_fields = parsedJson.key_fields || {};
+      if (!parsedJson.key_fields.language) {
+        parsedJson.key_fields.language = preferredLanguage;
+      }
       if (usedPdfOcrFallback && !parsedJson.badge_text) {
         parsedJson.badge_text = "Scanned letter (please double-check numbers)";
       }
@@ -836,7 +849,7 @@ export async function POST(request: Request) {
       if (renderedImages && renderedImages.length) {
         const ocrText = await ocrImagesToText(renderedImages);
         if (ocrText && ocrText.trim().length > 80) {
-          parsedJson = await callTextModel(ocrText);
+          parsedJson = await callTextModel(ocrText, preferredLanguage);
           if (parsedJson) {
             parsedJson.summary = parsedJson.main_summary || parsedJson.summary;
             parsedJson.extra_details = Array.isArray(parsedJson.extra_details)
@@ -857,6 +870,7 @@ export async function POST(request: Request) {
         summary: "Scan not readable. Please upload a clearer photo or higher-resolution scan.",
         main_summary: "Scan not readable. Please upload a clearer photo or higher-resolution scan.",
         extra_details: [],
+        key_fields: { language: preferredLanguage },
       };
       if (usedPdfOcrFallback && !parsedJson.badge_text) {
         parsedJson.badge_text = "Scanned letter (please double-check numbers)";

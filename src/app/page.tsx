@@ -11,8 +11,9 @@ import uploadOn from "../../images/upload-selected.png";
 import uploadOff from "../../images/upload-unselected.png";
 import folderOn from "../../images/open-folder-selected.png";
 import folderOff from "../../images/open-folder-unselected.png";
+import { LanguageProvider, useLanguage } from "@/lib/language";
 
-export default function Home() {
+function HomeContent() {
   const pathname = usePathname();
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
@@ -20,6 +21,7 @@ export default function Home() {
   const [, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const { lang, setLang, t } = useLanguage();
 
   const loadUser = useCallback(async () => {
     setLoading(true);
@@ -77,7 +79,7 @@ export default function Home() {
   if (loading) {
     return (
       <div className="pit-page flex items-center justify-center">
-        <p className="text-sm pit-muted">Loading...</p>
+        <p className="text-sm pit-muted">{t("loading")}</p>
       </div>
     );
   }
@@ -123,7 +125,7 @@ export default function Home() {
           </div>
           <div
             className="absolute flex items-center"
-            style={{ top: "50%", right: 0, transform: "translateY(-50%)" }}
+            style={{ top: "calc(50% + 30px)", right: "25px", transform: "translateY(-50%)" }}
           >
             <div
               role="button"
@@ -140,17 +142,32 @@ export default function Home() {
                 gap: "2px",
                 cursor: "pointer",
                 padding: "6px 0",
-                color: "rgba(0,0,0,0.65)",
+                color: "rgba(0,0,0,0.5)",
               }}
             >
-              <span style={{ fontSize: "13px", letterSpacing: "0" }}>Log out</span>
+              <span style={{ fontSize: "15px", letterSpacing: "0" }}>Log out</span>
               <span
                 className="pit-subtitle"
-                style={{ fontFamily: "Georgia, serif", fontSize: "11px", letterSpacing: "0" }}
+                style={{ fontFamily: "Georgia, serif", fontSize: "12px", letterSpacing: "0" }}
               >
                 {userEmail}
               </span>
             </div>
+            <select
+              aria-label="Language"
+              value={lang}
+              onChange={(e) => setLang(e.target.value as any)}
+              className="ml-3 rounded-md border border-[rgba(0,0,0,0.1)] bg-white/60 px-2 py-1 text-xs"
+              style={{ color: "rgba(0,0,0,0.65)" }}
+            >
+              <option value="de">DE</option>
+              <option value="en">EN</option>
+              <option value="ro">RO</option>
+              <option value="tr">TR</option>
+              <option value="fr">FR</option>
+              <option value="es">ES</option>
+              <option value="ar">AR</option>
+            </select>
           </div>
         </header>
 
@@ -182,8 +199,8 @@ export default function Home() {
           style={{ boxShadow: "inset 0 1px 0 rgba(255,255,255,0.6)" }}
         >
           {[
-            { href: "/", on: uploadOn, off: uploadOff, label: "Home" },
-            { href: "/files", on: folderOn, off: folderOff, label: "Files" },
+            { href: "/", on: uploadOn, off: uploadOff, label: t("home") },
+            { href: "/files", on: folderOn, off: folderOff, label: t("files") },
           ].map((item) => {
             const active = pathname === item.href;
             return (
@@ -210,5 +227,13 @@ export default function Home() {
         </div>
       </nav>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <LanguageProvider>
+      <HomeContent />
+    </LanguageProvider>
   );
 }
