@@ -26,6 +26,8 @@ const buildSystemPrompt = (
   const jurEvidence = context.jurisdiction?.evidence || null;
   const parts = [
     `You are the assistant for this document's domain and jurisdiction. Answer in ${lang}. Use only provided info; if unknown, say so. Be concise and action-oriented.`,
+    `Provide informational guidance only. You are not a lawyer and this is not legal advice. You may share an informal view on possible steps but must tell the user to verify with a qualified professional before acting. If asked for definitive legal advice, say you're not authorized and recommend consulting a professional.`,
+    `You may propose draft responses; prefix with "Draft (review with a professional before sending):" and keep them concise. Never invent facts.`,
     `Jurisdiction: ${country || "unknown"}${region ? ` (${region})` : ""}${jurEvidence ? ` | evidence: ${jurEvidence}` : ""}`,
     `Domain: ${context.domain || "unknown"}`,
     `Sender: ${context.sender || "unknown"}`,
@@ -87,6 +89,98 @@ const mapJurisdiction = (extraction: any) => {
   // Heuristic fallback from reference IDs (IBAN/VAT prefixes) or sender domains could be added here.
   return { country_code: null, region: null, evidence: null };
 };
+
+const summarizeRelated = (entry: {
+  id: string;
+  title: string;
+  created_at: string | null;
+  extraction: any;
+}) => {
+  const parts: string[] = [];
+  const date = entry.created_at ? new Date(entry.created_at).toISOString().slice(0, 10) : "";
+  parts.push(`${entry.title}${date ? ` (${date})` : ""}`);
+  const summary =
+    typeof entry.extraction?.main_summary === "string" && entry.extraction.main_summary.trim()
+      ? entry.extraction.main_summary.trim()
+      : typeof entry.extraction?.summary === "string" && entry.extraction.summary.trim()
+        ? entry.extraction.summary.trim()
+        : null;
+  if (summary) parts.push(summary.length > 200 ? `${summary.slice(0, 197)}...` : summary);
+  const badge = typeof entry.extraction?.badge_text === "string" && entry.extraction.badge_text.trim()
+    ? entry.extraction.badge_text.trim()
+    : null;
+  if (badge) parts.push(`Badge: ${badge}`);
+  const refObj = entry.extraction?.key_fields?.reference_ids;
+  if (refObj && typeof refObj === "object") {
+    const refs = Object.entries(refObj as Record<string, unknown>)
+      .filter(([, v]) => typeof v === "string" && (v as string).trim())
+      .map(([k, v]) => `${k}:${(v as string).trim()}`);
+    if (refs.length) parts.push(`Refs: ${refs.join(", ")}`);
+  }
+  const deadlines = Array.isArray(entry.extraction?.deadlines)
+    ? (entry.extraction.deadlines as any[]).filter((d) => d && typeof d === "object")
+    : [];
+  if (deadlines.length) {
+    const first = deadlines
+      .map((d) => {
+        const ddate = typeof d?.date_exact === "string" ? d.date_exact : "";
+        const ddesc = typeof d?.description === "string" ? d.description : "";
+        return `${ddate} ${ddesc}`.trim();
+      })
+      .find(Boolean);
+    if (first) parts.push(`Deadline: ${first}`);
+  }
+  const amount =
+    typeof entry.extraction?.key_fields?.amount_total === "number" && Number.isFinite(entry.extraction.key_fields.amount_total)
+      ? entry.extraction.key_fields.amount_total
+      : null;
+  const currency = typeof entry.extraction?.key_fields?.currency === "string" ? entry.extraction.key_fields.currency : "";
+  if (amount !== null) parts.push(`Amount: ${amount} ${currency}`.trim());
+  return parts.join(" | ");
+};
+
+async function getRelatedDocs(
+  supabase: ReturnType<typeof supabaseAdmin>,
+  userId: string,
+  currentDocId: string,
+  caseId: string | null,
+  categoryId: string | null
+) {
+  const docsQuery = supabase
+    .from("documents")
+    .select("id, title, created_at, case_id")
+    .eq("user_id", userId)
+    .neq("status", "error")
+    .neq("id", currentDocId)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (caseId) {
+    docsQuery.eq("case_id", caseId);
+  } else if (categoryId) {
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    docsQuery.eq("category_id", categoryId).gte("created_at", ninetyDaysAgo);
+  } else {
+    return [];
+  }
+
+  const { data, error } = await docsQuery;
+  if (error) return [];
+  const rows = Array.isArray(data) ? data : [];
+  if (!rows.length) return [];
+
+  const related: string[] = [];
+  for (const d of rows) {
+    try {
+      const extraction = await getLatestExtraction(supabase, d.id, userId);
+      if (!extraction) continue;
+      related.push(summarizeRelated({ id: d.id, title: d.title, created_at: d.created_at, extraction }));
+      if (related.length >= 3) break;
+    } catch (err) {
+      console.warn("related doc fetch skipped", err);
+    }
+  }
+  return related;
+}
 
 async function getOrCreateThread(
   supabase: ReturnType<typeof supabaseAdmin>,
@@ -159,7 +253,7 @@ export async function POST(request: Request) {
 
     const { data: doc, error: docErr } = await supabase
       .from("documents")
-      .select("id, user_id, title, category_id")
+      .select("id, user_id, title, category_id, case_id, created_at")
       .eq("id", documentId)
       .single();
     if (docErr) throw docErr;
@@ -174,6 +268,14 @@ export async function POST(request: Request) {
       ? await getOrCreateThread(supabase, doc.user_id, documentId)
       : await getOrCreateThread(supabase, doc.user_id, documentId);
 
+    const relatedDocs = await getRelatedDocs(
+      supabase,
+      doc.user_id,
+      doc.id,
+      (doc as any)?.case_id ?? null,
+      doc.category_id ?? null
+    );
+
     const contextParts = [
       extraction?.main_summary || extraction?.summary ? `Summary: ${extraction.main_summary || extraction.summary}` : "",
       extraction?.badge_text ? `Badge: ${extraction.badge_text}` : "",
@@ -187,6 +289,11 @@ export async function POST(request: Request) {
               const desc = typeof d?.description === "string" ? d.description : "";
               return `- ${date} ${desc}`.trim();
             })
+            .join("\n")}`
+        : "",
+      relatedDocs.length
+        ? `Related documents (reference only; focus on the selected document):\n${relatedDocs
+            .map((r) => `- ${r}`)
             .join("\n")}`
         : "",
       keyFields?.raw_text ? `RAW TEXT:\n${keyFields.raw_text}` : "",
