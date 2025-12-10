@@ -689,6 +689,7 @@ const buildExtractionPrompt = (preferredLanguage: SupportedLang) =>
     '  "badge_text": "Short chip about deadline/type or null",',
     '  "extra_details": ["bullet 1","bullet 2"... up to 5, only if new info],',
     '  "document_kind": "letter | invoice | contract | notice | info | other",',
+    '  "jurisdiction": { "country_code": "DE|FR|RO|TR|ES|PT|RU|PL|UA|GB|... or null", "region": "state/Land/province or null", "evidence": "short reason (sender, statute, address)" },',
     '  "key_fields": {',
     `    "language": "${preferredLanguage}",`,
     '    "sender": "...",',

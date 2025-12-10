@@ -6,14 +6,50 @@ export const runtime = "nodejs";
 
 type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
 
-const buildSystemPrompt = (uiLang: string | null, profileHint: string | null) => {
+const buildSystemPrompt = (
+  uiLang: string | null,
+  context: {
+    jurisdiction?: { country_code?: string | null; region?: string | null; evidence?: string | null } | null;
+    domain?: string | null;
+    sender?: string | null;
+    topic?: string | null;
+    caseLabels?: string[] | null;
+    referenceIds?: Record<string, string> | null;
+    amount?: { value?: number | null; currency?: string | null } | null;
+    risk?: string | null;
+    uncertainty?: string[] | null;
+  }
+) => {
   const lang = uiLang || "de";
-  const profileText = profileHint ? `Du bist Assistent für Profil ${profileHint}. ` : "";
-  return [
-    `${profileText}Antworte in ${lang}.`,
-    "Erkläre nur, was im Dokument steht; erfinde nichts.",
-    "Wenn etwas unklar ist, sag es explizit.",
-  ].join(" ");
+  const country = context.jurisdiction?.country_code || null;
+  const region = context.jurisdiction?.region || null;
+  const jurEvidence = context.jurisdiction?.evidence || null;
+  const parts = [
+    `You are the assistant for this document's domain and jurisdiction. Answer in ${lang}. Use only provided info; if unknown, say so. Be concise and action-oriented.`,
+    `Jurisdiction: ${country || "unknown"}${region ? ` (${region})` : ""}${jurEvidence ? ` | evidence: ${jurEvidence}` : ""}`,
+    `Domain: ${context.domain || "unknown"}`,
+    `Sender: ${context.sender || "unknown"}`,
+    `Topic: ${context.topic || (context.caseLabels?.join(", ") || "unknown")}`,
+  ];
+
+  const refIds = context.referenceIds && Object.keys(context.referenceIds).length
+    ? Object.entries(context.referenceIds)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(", ")
+    : null;
+  if (refIds) parts.push(`Reference IDs: ${refIds}`);
+
+  if (context.amount?.value || context.amount?.currency) {
+    parts.push(`Amount/Currency: ${context.amount?.value ?? "?"} ${context.amount?.currency ?? ""}`.trim());
+  }
+  if (context.risk || (context.uncertainty && context.uncertainty.length)) {
+    parts.push(
+      `Risk/Uncertainty: ${context.risk || "none"}; Flags: ${(context.uncertainty || []).join(", ") || "none"}`
+    );
+  }
+
+  parts.push("Context follows. Use it; do not invent.");
+  return parts.join("\n");
 };
 
 async function getLatestExtraction(
@@ -32,6 +68,25 @@ async function getLatestExtraction(
   if (error) return null;
   return (data as any)?.content ?? null;
 }
+
+const normalizePath = (arr: any): string | null => {
+  if (!Array.isArray(arr)) return null;
+  const cleaned = arr.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim());
+  return cleaned.length ? cleaned.join(" / ") : null;
+};
+
+const mapJurisdiction = (extraction: any) => {
+  const jur = extraction?.jurisdiction;
+  if (jur && typeof jur === "object") {
+    return {
+      country_code: typeof jur.country_code === "string" ? jur.country_code : null,
+      region: typeof jur.region === "string" ? jur.region : null,
+      evidence: typeof jur.evidence === "string" ? jur.evidence : null,
+    };
+  }
+  // Heuristic fallback from reference IDs (IBAN/VAT prefixes) or sender domains could be added here.
+  return { country_code: null, region: null, evidence: null };
+};
 
 async function getOrCreateThread(
   supabase: ReturnType<typeof supabaseAdmin>,
@@ -119,17 +174,61 @@ export async function POST(request: Request) {
       ? await getOrCreateThread(supabase, doc.user_id, documentId)
       : await getOrCreateThread(supabase, doc.user_id, documentId);
 
-    const systemPrompt = buildSystemPrompt(uiLang, profileHint);
     const contextParts = [
       extraction?.main_summary || extraction?.summary ? `Summary: ${extraction.main_summary || extraction.summary}` : "",
-      extraction?.badge_text ? `Badges: ${extraction.badge_text}` : "",
+      extraction?.badge_text ? `Badge: ${extraction.badge_text}` : "",
       Array.isArray(extraction?.extra_details) && extraction.extra_details.length
         ? `Details:\n${extraction.extra_details.join("\n")}`
+        : "",
+      Array.isArray(extraction?.deadlines) && extraction.deadlines.length
+        ? `Deadlines:\n${extraction.deadlines
+            .map((d: any) => {
+              const date = typeof d?.date_exact === "string" ? d.date_exact : "";
+              const desc = typeof d?.description === "string" ? d.description : "";
+              return `- ${date} ${desc}`.trim();
+            })
+            .join("\n")}`
         : "",
       keyFields?.raw_text ? `RAW TEXT:\n${keyFields.raw_text}` : "",
     ]
       .filter(Boolean)
       .join("\n\n");
+
+    const jurisdiction = mapJurisdiction(extraction);
+    const categoryPath = normalizePath(keyFields?.category_path);
+    const domain = profileHint || categoryPath || null;
+    const refObj = keyFields?.reference_ids;
+    const referenceIds = refObj && typeof refObj === "object" && !Array.isArray(refObj)
+      ? Object.entries(refObj as Record<string, unknown>).reduce<Record<string, string>>((acc, [k, v]) => {
+          if (typeof v === "string" && v.trim()) acc[k] = v.trim();
+          return acc;
+        }, {})
+      : null;
+    const amount =
+      typeof keyFields?.amount_total === "number" && Number.isFinite(keyFields.amount_total)
+        ? { value: keyFields.amount_total, currency: typeof keyFields?.currency === "string" ? keyFields.currency : null }
+        : null;
+    const risk = typeof (extraction as any)?.risk_level === "string" ? (extraction as any).risk_level : null;
+    const uncertainty = Array.isArray((extraction as any)?.uncertainty_flags)
+      ? ((extraction as any)?.uncertainty_flags as any[]).filter((s) => typeof s === "string" && s.trim())
+      : null;
+
+    const systemPrompt = buildSystemPrompt(uiLang, {
+      jurisdiction,
+      domain,
+      sender: typeof keyFields?.sender === "string" && keyFields.sender.trim() ? keyFields.sender.trim() : null,
+      topic:
+        typeof (keyFields as any)?.primary_topic_label === "string" && (keyFields as any)?.primary_topic_label?.trim()
+          ? ((keyFields as any)?.primary_topic_label as string).trim()
+          : typeof keyFields?.topic === "string" && keyFields.topic.trim()
+            ? keyFields.topic.trim()
+            : null,
+      caseLabels: Array.isArray((keyFields as any)?.case_labels) ? ((keyFields as any)?.case_labels as string[]) : null,
+      referenceIds,
+      amount,
+      risk,
+      uncertainty,
+    });
 
     const openaiKey = process.env.OPENAI_API_KEY;
     if (!openaiKey) throw new Error("Missing OPENAI_API_KEY");

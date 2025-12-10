@@ -10,6 +10,15 @@ export const extractionSchema = z
       .enum(["letter", "invoice", "contract", "notice", "info", "other"])
       .nullable()
       .optional(),
+    jurisdiction: z
+      .object({
+        country_code: z.string().nullable().optional(),
+        region: z.string().nullable().optional(),
+        evidence: z.string().nullable().optional(),
+      })
+      .partial()
+      .nullable()
+      .optional(),
     key_fields: z
       .object({
         language: z.string().nullable().optional(),
