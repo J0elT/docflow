@@ -22,6 +22,7 @@ function HomeContent() {
   const [, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [processingLong, setProcessingLong] = useState(false);
   const { lang, setLang, t } = useLanguage();
 
   const loadUser = useCallback(async () => {
@@ -71,6 +72,15 @@ function HomeContent() {
     loadUser();
   }, [loadUser]);
 
+  useEffect(() => {
+    if (!processing) {
+      setProcessingLong(false);
+      return;
+    }
+    const timer = setTimeout(() => setProcessingLong(true), 25000);
+    return () => clearTimeout(timer);
+  }, [processing]);
+
   const handleLogout = async () => {
     const supabase = supabaseBrowser();
     await supabase.auth.signOut();
@@ -80,7 +90,7 @@ function HomeContent() {
   if (loading) {
     return (
       <div className="pit-page flex items-center justify-center">
-        <p className="text-sm pit-muted">{t("loading")}</p>
+        <p className="text-sm pit-muted">Loading…</p>
       </div>
     );
   }
@@ -168,11 +178,36 @@ function HomeContent() {
               <option value="fr">FR</option>
               <option value="es">ES</option>
               <option value="ar">AR</option>
+              <option value="pt">PT</option>
+              <option value="ru">RU</option>
+              <option value="pl">PL</option>
+              <option value="uk">UA</option>
             </select>
           </div>
         </header>
 
         <section className="pit-card">
+          {processingLong && (
+            <div
+              className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-[rgba(0,0,0,0.08)] bg-[rgba(0,0,0,0.02)] px-3 py-2 text-sm"
+            >
+              <span style={{ color: "rgba(0,0,0,0.7)" }}>{t("processingLong")}</span>
+              <button
+                type="button"
+                onClick={() => setRefreshKey((k) => k + 1)}
+                className="text-xs"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  background: "rgba(0,0,0,0.03)",
+                  cursor: "pointer",
+                }}
+              >
+                {t("processingLongAction")}
+              </button>
+            </div>
+          )}
           <UploadForm
             processing={processing}
             onUploaded={() => setRefreshKey((k) => k + 1)}

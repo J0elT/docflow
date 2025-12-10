@@ -1,10 +1,28 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
-export type LanguageCode = "de" | "en" | "ro" | "tr" | "fr" | "es" | "ar";
+export type LanguageCode =
+  | "de"
+  | "en"
+  | "ro"
+  | "tr"
+  | "fr"
+  | "es"
+  | "ar"
+  | "pt"
+  | "ru"
+  | "pl"
+  | "uk";
 
-const SUPPORTED: LanguageCode[] = ["de", "en", "ro", "tr", "fr", "es", "ar"];
+const SUPPORTED: LanguageCode[] = ["de", "en", "ro", "tr", "fr", "es", "ar", "pt", "ru", "pl", "uk"];
 
 const translations: Record<LanguageCode, Record<string, string>> = {
   en: {
@@ -16,7 +34,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Documents without open tasks.",
     titleHeader: "Title",
     summaryHeader: "Summary",
-    actionsHeader: "Actions",
+    actionsHeader: "To-dos",
     loading: "Loading...",
     noDocs: "No documents yet.",
     noDocsOpen: "No documents with open tasks.",
@@ -37,9 +55,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normal",
     high: "High",
     moveToFiles: "Move to files",
+    applySuggestion: "Apply suggestion",
+    suggestionLabel: "Suggested:",
+    reprocess: "Reprocess",
+    reprocessHint: "Re-run extraction",
     uploadDrop: "Drop files here or click to choose",
     uploadUploading: "Uploading...",
     uploadProcessing: "Processing upload...",
+    processingLong: "Processing is taking longer than usual — you can keep waiting or refresh later.",
+    processingLongAction: "Refresh",
     uploadHint: "PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.",
     paste: "paste",
     unsupportedType: "Unsupported file type. Please upload PDF, DOC, DOCX, TXT, PNG, or JPEG.",
@@ -66,7 +90,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Dokumente ohne offene Aufgaben.",
     titleHeader: "Titel",
     summaryHeader: "Zusammenfassung",
-    actionsHeader: "Aktionen",
+    actionsHeader: "Aufgaben",
     loading: "Lade...",
     noDocs: "Noch keine Dokumente.",
     noDocsOpen: "Keine Dokumente mit offenen Aufgaben.",
@@ -87,9 +111,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normal",
     high: "Hoch",
     moveToFiles: "Ablage",
+    applySuggestion: "Vorschlag übernehmen",
+    suggestionLabel: "Vorgeschlagen:",
+    reprocess: "Neu verarbeiten",
+    reprocessHint: "Extraktion erneut ausführen",
     uploadDrop: "Dateien hier ablegen oder klicken",
     uploadUploading: "Lade hoch...",
     uploadProcessing: "Verarbeitung läuft...",
+    processingLong: "Verarbeitung dauert länger als üblich – du kannst weiter warten oder später aktualisieren.",
+    processingLongAction: "Aktualisieren",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG oder JPEG. Max. 25MB; Bilder werden vor dem Upload optimiert.",
     paste: "einfügen",
@@ -118,7 +148,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Documente fără sarcini deschise.",
     titleHeader: "Titlu",
     summaryHeader: "Rezumat",
-    actionsHeader: "Acțiuni",
+    actionsHeader: "Sarcini",
     loading: "Se încarcă...",
     noDocs: "Nu există documente.",
     noDocsOpen: "Nu există documente cu sarcini deschise.",
@@ -139,9 +169,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normală",
     high: "Ridicată",
     moveToFiles: "Arhivează",
+    applySuggestion: "Aplică sugestia",
+    suggestionLabel: "Sugerat:",
+    reprocess: "Reprocesează",
+    reprocessHint: "Rulează din nou extragerea",
     uploadDrop: "Trage fișierele aici sau click pentru a alege",
     uploadUploading: "Se încarcă...",
     uploadProcessing: "Se procesează...",
+    processingLong: "Procesarea durează mai mult decât de obicei — poți aștepta sau reîmprospăta mai târziu.",
+    processingLongAction: "Reîmprospătează",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG sau JPEG. Max 25MB; imaginile sunt optimizate înainte de upload.",
     paste: "lipire",
@@ -170,7 +206,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Açık görevi olmayan belgeler.",
     titleHeader: "Başlık",
     summaryHeader: "Özet",
-    actionsHeader: "İşlemler",
+    actionsHeader: "Yapılacaklar",
     loading: "Yükleniyor...",
     noDocs: "Henüz belge yok.",
     noDocsOpen: "Açık görevli belge yok.",
@@ -191,9 +227,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normal",
     high: "Yüksek",
     moveToFiles: "Arşive taşı",
+    applySuggestion: "Öneriyi uygula",
+    suggestionLabel: "Öneri:",
+    reprocess: "Yeniden işle",
+    reprocessHint: "Çıkarımı yeniden çalıştır",
     uploadDrop: "Dosyaları bırak veya tıkla",
     uploadUploading: "Yükleniyor...",
     uploadProcessing: "İşleniyor...",
+    processingLong: "İşleme alışılmadık şekilde uzun sürüyor — bekleyebilir veya sonra yenileyebilirsin.",
+    processingLongAction: "Yenile",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG veya JPEG. En fazla 25MB; görseller yüklemeden önce optimize edilir.",
     paste: "yapıştır",
@@ -221,7 +263,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Documents sans tâches ouvertes.",
     titleHeader: "Titre",
     summaryHeader: "Résumé",
-    actionsHeader: "Actions",
+    actionsHeader: "Tâches",
     loading: "Chargement...",
     noDocs: "Aucun document.",
     noDocsOpen: "Aucun document avec tâches ouvertes.",
@@ -242,9 +284,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normale",
     high: "Haute",
     moveToFiles: "Archiver",
+    applySuggestion: "Appliquer la suggestion",
+    suggestionLabel: "Suggéré :",
+    reprocess: "Re-traiter",
+    reprocessHint: "Relancer l'extraction",
     uploadDrop: "Déposez des fichiers ou cliquez pour choisir",
     uploadUploading: "Téléversement...",
     uploadProcessing: "Traitement en cours...",
+    processingLong: "Le traitement prend plus de temps que d'habitude — vous pouvez attendre ou actualiser plus tard.",
+    processingLongAction: "Actualiser",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG ou JPEG. Max 25Mo; les images sont optimisées avant upload.",
     paste: "coller",
@@ -273,7 +321,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "Documentos sin tareas pendientes.",
     titleHeader: "Título",
     summaryHeader: "Resumen",
-    actionsHeader: "Acciones",
+    actionsHeader: "Tareas",
     loading: "Cargando...",
     noDocs: "Sin documentos.",
     noDocsOpen: "Sin documentos con tareas abiertas.",
@@ -294,9 +342,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "Normal",
     high: "Alta",
     moveToFiles: "Archivar",
+    applySuggestion: "Aplicar sugerencia",
+    suggestionLabel: "Sugerido:",
+    reprocess: "Reprocesar",
+    reprocessHint: "Ejecutar extracción de nuevo",
     uploadDrop: "Suelta archivos o haz clic para elegir",
     uploadUploading: "Subiendo...",
     uploadProcessing: "Procesando...",
+    processingLong: "El procesamiento está tardando más de lo habitual — puedes seguir esperando o actualizar después.",
+    processingLongAction: "Actualizar",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG o JPEG. Máx 25MB; las imágenes se optimizan antes de subir.",
     paste: "pegar",
@@ -325,7 +379,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     readySubtitle: "رسائل بلا مهام مفتوحة.",
     titleHeader: "العنوان",
     summaryHeader: "الملخص",
-    actionsHeader: "الإجراءات",
+    actionsHeader: "المهام",
     loading: "جارٍ التحميل...",
     noDocs: "لا توجد مستندات.",
     noDocsOpen: "لا توجد مستندات بها مهام مفتوحة.",
@@ -346,9 +400,15 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     normal: "عادي",
     high: "مرتفع",
     moveToFiles: "أرشفة",
+    applySuggestion: "تطبيق الاقتراح",
+    suggestionLabel: "مقترح:",
+    reprocess: "إعادة المعالجة",
+    reprocessHint: "إعادة تشغيل الاستخراج",
     uploadDrop: "اسحب الملفات هنا أو اضغط للاختيار",
     uploadUploading: "جارٍ الرفع...",
     uploadProcessing: "جارٍ المعالجة...",
+    processingLong: "المعالجة تستغرق وقتًا أطول من المعتاد — يمكنك الانتظار أو التحديث لاحقًا.",
+    processingLongAction: "تحديث",
     uploadHint: "PDF أو DOC/DOCX أو TXT أو PNG أو JPEG. الحد 25MB؛ يتم تحسين الصور قبل الرفع.",
     paste: "لصق",
     unsupportedType: "نوع ملف غير مدعوم. ارفع PDF أو DOC أو DOCX أو TXT أو PNG أو JPEG.",
@@ -366,6 +426,241 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     dueInOne: "الموعد خلال يوم",
     dueInDays: "الموعد خلال {days} أيام",
   },
+  pt: {
+    home: "Início",
+    files: "Arquivo",
+    needsAttentionTitle: "Requer atenção",
+    needsAttentionSubtitle: "Documentos com tarefas ou prazos.",
+    readyTitle: "Pronto para arquivar",
+    readySubtitle: "Documentos sem tarefas abertas.",
+    titleHeader: "Título",
+    summaryHeader: "Resumo",
+    actionsHeader: "A fazer",
+    loading: "Carregando...",
+    noDocs: "Nenhum documento.",
+    noDocsOpen: "Nenhum documento com tarefas abertas.",
+    noDocsReady: "Nenhum documento pronto para arquivar.",
+    delete: "Excluir",
+    preview: "Pré-visualizar",
+    openTasks: "{count} tarefa aberta",
+    openTasksPlural: "{count} tarefas abertas",
+    noActionRequired: "Nenhuma ação necessária",
+    infoOnly: "Apenas informação",
+    showDetails: "Mostrar detalhes",
+    hideDetails: "Ocultar detalhes",
+    completed: "Concluído ({count})",
+    addTask: "Adicionar tarefa",
+    cancel: "Cancelar",
+    urgency: "Prioridade",
+    low: "Baixa",
+    normal: "Normal",
+    high: "Alta",
+    moveToFiles: "Arquivar",
+    applySuggestion: "Aplicar sugestão",
+    suggestionLabel: "Sugerido:",
+    reprocess: "Reprocessar",
+    reprocessHint: "Executar a extração novamente",
+    uploadDrop: "Solte arquivos aqui ou clique para escolher",
+    uploadUploading: "Enviando...",
+    uploadProcessing: "Processando...",
+    processingLong:
+      "O processamento está demorando mais que o normal — você pode esperar ou atualizar depois.",
+    processingLongAction: "Atualizar",
+    uploadHint:
+      "PDF, DOC/DOCX, TXT, PNG ou JPEG. Máx 25MB; imagens são otimizadas antes do envio.",
+    paste: "colar",
+    unsupportedType: "Tipo de arquivo não suportado. Envie PDF, DOC, DOCX, TXT, PNG ou JPEG.",
+    fileTooLarge: "Arquivo muito grande. Limite de 25MB.",
+    imageTooLarge: "Imagem grande demais após o processamento. Use uma menor.",
+    loginRequired: "Faça login para enviar.",
+    maxFiles: "Envie até {count} arquivos por vez.",
+    batchTooLarge: "Lote muito grande. Use um menor.",
+    notLoggedIn: "Não conectado.",
+    takingTooLong: "Demorando demais. Tente novamente.",
+    uncategorized: "Sem categoria",
+    actionNeededBy: "Ação necessária até {date}",
+    dueOverdue: "Prazo vencido ({days} dias)",
+    dueToday: "Prazo hoje",
+    dueInOne: "Prazo em 1 dia",
+    dueInDays: "Prazo em {days} dias",
+  },
+  ru: {
+    home: "Главная",
+    files: "Архив",
+    needsAttentionTitle: "Требует внимания",
+    needsAttentionSubtitle: "Документы с задачами или сроками.",
+    readyTitle: "Готово к архиву",
+    readySubtitle: "Документы без открытых задач.",
+    titleHeader: "Название",
+    summaryHeader: "Сводка",
+    actionsHeader: "Задачи",
+    loading: "Загрузка...",
+    noDocs: "Документов нет.",
+    noDocsOpen: "Нет документов с открытыми задачами.",
+    noDocsReady: "Нет документов, готовых к архиву.",
+    delete: "Удалить",
+    preview: "Просмотр",
+    openTasks: "{count} открытая задача",
+    openTasksPlural: "{count} открытых задач",
+    noActionRequired: "Действий не требуется",
+    infoOnly: "Только информация",
+    showDetails: "Показать детали",
+    hideDetails: "Скрыть детали",
+    completed: "Выполнено ({count})",
+    addTask: "Добавить задачу",
+    cancel: "Отмена",
+    urgency: "Приоритет",
+    low: "Низкий",
+    normal: "Нормальный",
+    high: "Высокий",
+    moveToFiles: "В архив",
+    applySuggestion: "Применить предложение",
+    suggestionLabel: "Предложено:",
+    reprocess: "Повторно обработать",
+    reprocessHint: "Запустить извлечение еще раз",
+    uploadDrop: "Перетащите файлы или нажмите, чтобы выбрать",
+    uploadUploading: "Загрузка...",
+    uploadProcessing: "Обработка...",
+    processingLong:
+      "Обработка занимает дольше обычного — можете подождать или обновить позже.",
+    processingLongAction: "Обновить",
+    uploadHint:
+      "PDF, DOC/DOCX, TXT, PNG или JPEG. До 25MB; изображения оптимизируются перед загрузкой.",
+    paste: "вставить",
+    unsupportedType:
+      "Неподдерживаемый тип файла. Загрузите PDF, DOC, DOCX, TXT, PNG или JPEG.",
+    fileTooLarge: "Файл слишком большой. Лимит 25MB.",
+    imageTooLarge: "Изображение слишком большое после обработки. Используйте меньший файл.",
+    loginRequired: "Войдите, чтобы загрузить.",
+    maxFiles: "Загружайте до {count} файлов за раз.",
+    batchTooLarge: "Пакет слишком большой. Используйте меньший.",
+    notLoggedIn: "Не вошли в систему.",
+    takingTooLong: "Слишком долго. Попробуйте снова.",
+    uncategorized: "Без категории",
+    actionNeededBy: "Действие требуется до {date}",
+    dueOverdue: "Срок прошел ({days} дн.)",
+    dueToday: "Срок сегодня",
+    dueInOne: "Срок через 1 день",
+    dueInDays: "Срок через {days} дней",
+  },
+  pl: {
+    home: "Strona główna",
+    files: "Archiwum",
+    needsAttentionTitle: "Wymaga uwagi",
+    needsAttentionSubtitle: "Dokumenty z zadaniami lub terminami.",
+    readyTitle: "Gotowe do archiwizacji",
+    readySubtitle: "Dokumenty bez otwartych zadań.",
+    titleHeader: "Tytuł",
+    summaryHeader: "Podsumowanie",
+    actionsHeader: "Zadania",
+    loading: "Ładowanie...",
+    noDocs: "Brak dokumentów.",
+    noDocsOpen: "Brak dokumentów z otwartymi zadaniami.",
+    noDocsReady: "Brak dokumentów gotowych do archiwizacji.",
+    delete: "Usuń",
+    preview: "Podgląd",
+    openTasks: "{count} otwarte zadanie",
+    openTasksPlural: "{count} otwartych zadań",
+    noActionRequired: "Brak wymaganych działań",
+    infoOnly: "Tylko informacja",
+    showDetails: "Pokaż szczegóły",
+    hideDetails: "Ukryj szczegóły",
+    completed: "Ukończone ({count})",
+    addTask: "Dodaj zadanie",
+    cancel: "Anuluj",
+    urgency: "Priorytet",
+    low: "Niski",
+    normal: "Normalny",
+    high: "Wysoki",
+    moveToFiles: "Archiwizuj",
+    applySuggestion: "Zastosuj sugestię",
+    suggestionLabel: "Sugestia:",
+    reprocess: "Przetwórz ponownie",
+    reprocessHint: "Uruchom ekstrakcję ponownie",
+    uploadDrop: "Upuść pliki tutaj lub kliknij, aby wybrać",
+    uploadUploading: "Przesyłanie...",
+    uploadProcessing: "Przetwarzanie...",
+    processingLong:
+      "Przetwarzanie trwa dłużej niż zwykle — możesz poczekać albo odświeżyć później.",
+    processingLongAction: "Odśwież",
+    uploadHint:
+      "PDF, DOC/DOCX, TXT, PNG lub JPEG. Maks 25MB; obrazy są optymalizowane przed wysłaniem.",
+    paste: "wklej",
+    unsupportedType:
+      "Nieobsługiwany typ pliku. Prześlij PDF, DOC, DOCX, TXT, PNG lub JPEG.",
+    fileTooLarge: "Plik jest za duży. Limit 25MB.",
+    imageTooLarge: "Obraz jest zbyt duży po przetworzeniu. Użyj mniejszego.",
+    loginRequired: "Zaloguj się, aby przesłać.",
+    maxFiles: "Prześlij maksymalnie {count} plików na raz.",
+    batchTooLarge: "Partia jest za duża. Użyj mniejszej.",
+    notLoggedIn: "Nie jesteś zalogowany.",
+    takingTooLong: "Za długo to trwa. Spróbuj ponownie.",
+    uncategorized: "Bez kategorii",
+    actionNeededBy: "Działanie wymagane do {date}",
+    dueOverdue: "Termin minął ({days} dni)",
+    dueToday: "Termin dzisiaj",
+    dueInOne: "Termin za 1 dzień",
+    dueInDays: "Termin za {days} dni",
+  },
+  uk: {
+    home: "Головна",
+    files: "Архів",
+    needsAttentionTitle: "Потребує уваги",
+    needsAttentionSubtitle: "Документи із завданнями або дедлайнами.",
+    readyTitle: "Готово до архіву",
+    readySubtitle: "Документи без відкритих завдань.",
+    titleHeader: "Назва",
+    summaryHeader: "Підсумок",
+    actionsHeader: "Завдання",
+    loading: "Завантаження...",
+    noDocs: "Немає документів.",
+    noDocsOpen: "Немає документів з відкритими завданнями.",
+    noDocsReady: "Немає документів, готових до архіву.",
+    delete: "Видалити",
+    preview: "Перегляд",
+    openTasks: "{count} відкрите завдання",
+    openTasksPlural: "{count} відкритих завдань",
+    noActionRequired: "Дій не потрібно",
+    infoOnly: "Лише інформація",
+    showDetails: "Показати деталі",
+    hideDetails: "Приховати деталі",
+    completed: "Виконано ({count})",
+    addTask: "Додати завдання",
+    cancel: "Скасувати",
+    urgency: "Пріоритет",
+    low: "Низький",
+    normal: "Звичайний",
+    high: "Високий",
+    moveToFiles: "В архів",
+    applySuggestion: "Застосувати пропозицію",
+    suggestionLabel: "Запропоновано:",
+    reprocess: "Повторно обробити",
+    reprocessHint: "Запустити витягнення ще раз",
+    uploadDrop: "Перетягніть файли сюди або натисніть, щоб вибрати",
+    uploadUploading: "Завантаження...",
+    uploadProcessing: "Обробка...",
+    processingLong:
+      "Обробка триває довше, ніж зазвичай — можна почекати або оновити пізніше.",
+    processingLongAction: "Оновити",
+    uploadHint:
+      "PDF, DOC/DOCX, TXT, PNG або JPEG. До 25MB; зображення оптимізуються перед завантаженням.",
+    paste: "вставити",
+    unsupportedType:
+      "Непідтримуваний тип файлу. Завантажте PDF, DOC, DOCX, TXT, PNG або JPEG.",
+    fileTooLarge: "Файл занадто великий. Обмеження 25MB.",
+    imageTooLarge: "Зображення занадто велике після обробки. Використайте менше.",
+    loginRequired: "Увійдіть, щоб завантажувати.",
+    maxFiles: "Завантажуйте до {count} файлів за раз.",
+    batchTooLarge: "Пакет завеликий. Використайте менший.",
+    notLoggedIn: "Не увійшли.",
+    takingTooLong: "Занадто довго. Спробуйте ще раз.",
+    uncategorized: "Без категорії",
+    actionNeededBy: "Дія потрібна до {date}",
+    dueOverdue: "Термін минув ({days} днів)",
+    dueToday: "Термін сьогодні",
+    dueInOne: "Термін за 1 день",
+    dueInDays: "Термін за {days} днів",
+  },
 };
 
 const fallbackLang: LanguageCode = "en";
@@ -379,22 +674,22 @@ type Ctx = {
 const LanguageContext = createContext<Ctx | null>(null);
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const [lang, setLang] = useState<LanguageCode>(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("docflow-lang");
-      if (stored && SUPPORTED.includes(stored as LanguageCode)) {
-        return stored as LanguageCode;
-      }
-    }
-    return "de";
-  });
+  const [lang, setLangState] = useState<LanguageCode>("de");
 
-  const updateLang = (code: LanguageCode) => {
-    setLang(code);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = localStorage.getItem("docflow-lang");
+    if (stored && SUPPORTED.includes(stored as LanguageCode)) {
+      setLangState(stored as LanguageCode);
+    }
+  }, []);
+
+  const updateLang = useCallback((code: LanguageCode) => {
+    setLangState(code);
     if (typeof window !== "undefined") {
       localStorage.setItem("docflow-lang", code);
     }
-  };
+  }, []);
 
   const t = useCallback(
     (key: string, vars?: Record<string, string | number>) => {
@@ -411,7 +706,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     [lang]
   );
 
-  const ctx = useMemo(() => ({ lang, setLang: updateLang, t }), [lang, t]);
+  const ctx = useMemo(() => ({ lang, setLang: updateLang, t }), [lang, t, updateLang]);
 
   return <LanguageContext.Provider value={ctx}>{children}</LanguageContext.Provider>;
 }
@@ -454,6 +749,14 @@ export function getLocaleForLanguage(code: LanguageCode): string {
       return "es-ES";
     case "ar":
       return "ar-EG";
+    case "pt":
+      return "pt-PT";
+    case "ru":
+      return "ru-RU";
+    case "pl":
+      return "pl-PL";
+    case "uk":
+      return "uk-UA";
     default:
       return "en-US";
   }

@@ -1,47 +1,36 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {
-  slugToLabel,
-  inferSuggestedCategorySlug,
-  canonicalizeCategorySegment,
-  mapToCategoryPath,
-  buildFriendlyTitle,
-} from "./route";
+import { mapToCategoryPath, buildFriendlyTitle } from "./route";
 
 describe("category helpers", () => {
-  it("maps slugs to labels with Sonstiges fallback", () => {
-    expect(slugToLabel("jobcenter")).toBe("Jobcenter (Bürgergeld, SGB II)");
-    expect(slugToLabel("unknown")).toBe("Sonstiges");
-    expect(slugToLabel(null)).toBe("Sonstiges");
-  });
-
-  it("infers category slugs from indicative text", () => {
-    expect(inferSuggestedCategorySlug("Schreiben vom Jobcenter über Bürgergeld")).toBe("jobcenter");
-    expect(inferSuggestedCategorySlug("Finanzamt Steuerbescheid 2024")).toBe("finanzamt");
-    expect(inferSuggestedCategorySlug("Krankenkasse Beitrag")).toBe("krankenkasse");
-    expect(inferSuggestedCategorySlug("unbekannt")).toBe("sonstiges");
-  });
-
-  it("canonicalizes category segments to known labels", () => {
-    expect(canonicalizeCategorySegment("jobcenter")).toBe("Jobcenter (Bürgergeld, SGB II)");
-    expect(canonicalizeCategorySegment("  FINANZAMT ")).toBe("Finanzamt / Steuern");
-    expect(canonicalizeCategorySegment("Steuerbescheid")).toBe("Finanzamt / Steuern");
-  });
-
-  it("maps parsed extraction to category path using suggestion or inference", () => {
-    const parsedWithSuggestion = {
-      category_suggestion: { slug: "miete" },
-      key_fields: { topic: "Mietvertrag" },
-      summary: "Etwas zum Mietvertrag",
+  it("uses key_fields.category_path when present", () => {
+    const parsed = {
+      key_fields: { category_path: ["Finanzen", "Steuern"] },
+      category_suggestion: { path: ["Ignored"], confidence: 0.9 },
     };
-    expect(mapToCategoryPath(parsedWithSuggestion as any, "")).toEqual(["Miete & Wohnen"]);
+    expect(mapToCategoryPath(parsed as any)).toEqual({
+      path: ["Finanzen", "Steuern"],
+      confidence: 0.9,
+    });
+  });
 
-    const parsedWithInference = {
-      key_fields: { topic: "Bürgergeld Antrag" },
-      summary: "Schreiben vom Jobcenter",
+  it("falls back to category_suggestion.path", () => {
+    const parsed = {
+      category_suggestion: { path: ["Gesundheit"], confidence: 0.8 },
     };
-    expect(mapToCategoryPath(parsedWithInference as any, "")).toEqual([
-      "Jobcenter (Bürgergeld, SGB II)",
-    ]);
+    expect(mapToCategoryPath(parsed as any)).toEqual({
+      path: ["Gesundheit"],
+      confidence: 0.8,
+    });
+  });
+
+  it("coarsely maps legacy slug to a generic path", () => {
+    const parsed = {
+      category_suggestion: { slug: "finanzamt", confidence: 0.6 },
+    };
+    expect(mapToCategoryPath(parsed as any)).toEqual({
+      path: ["Finance & Assets"],
+      confidence: 0.6,
+    });
   });
 });
 

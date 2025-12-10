@@ -19,9 +19,19 @@ type Category = {
   parent_id: string | null;
 };
 
+const formatSegmentDisplay = (segment: string) => {
+  const cleaned = segment.replace(/[_-]+/g, " ").trim();
+  if (!cleaned) return segment;
+  return cleaned
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
+};
+
 function FilesContent() {
   const pathname = usePathname();
   const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryTranslations, setCategoryTranslations] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [level1, setLevel1] = useState<string | undefined>();
@@ -54,12 +64,27 @@ function FilesContent() {
         if (catError) throw catError;
         setCategories(data ?? []);
 
+        const { data: trans, error: transErr } = await supabase
+          .from("category_translations")
+          .select("category_id, label, lang")
+          .eq("user_id", user.id)
+          .eq("lang", lang);
+        if (transErr && (transErr as { code?: string }).code !== "42P01") throw transErr;
+        const map: Record<string, string> = {};
+        (trans ?? []).forEach((t) => {
+          if (t?.category_id && typeof t.label === "string" && t.label.trim()) {
+            map[t.category_id] = t.label.trim();
+          }
+        });
+        setCategoryTranslations(map);
+
         const { data: docs, error: docError } = await supabase
           .from("documents")
-          .select("id, category_id, status")
+          .select("id, category_id, status, case_id")
           .eq("user_id", user.id)
           .neq("status", "error");
         if (docError) throw docError;
+
         const counts: Record<string, number> = {};
         let uncat = 0;
         (docs ?? []).forEach((d) => {
@@ -73,6 +98,7 @@ function FilesContent() {
         setDocCounts(counts);
         setUncatCount(uncat);
         setTotalCount((docs ?? []).length);
+
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : "Failed to load categories");
@@ -81,18 +107,48 @@ function FilesContent() {
       }
     };
     load();
-  }, []);
+  }, [lang]);
+
+  const labelFor = useCallback(
+    (cat: Category) => categoryTranslations[cat.id] || formatSegmentDisplay(cat.name),
+    [categoryTranslations]
+  );
 
   const roots = useMemo(
-    () => categories.filter((c) => c.parent_id === null).sort((a, b) => a.name.localeCompare(b.name)),
-    [categories]
+    () =>
+      categories
+        .filter((c) => c.parent_id === null)
+        .sort((a, b) => labelFor(a).localeCompare(labelFor(b))),
+    [categories, labelFor]
   );
   const childrenOf = useCallback(
     (parentId?: string) =>
       categories
         .filter((c) => c.parent_id === parentId)
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [categories]
+        .sort((a, b) => labelFor(a).localeCompare(labelFor(b))),
+    [categories, labelFor]
+  );
+
+  const countWithDesc = useCallback(
+    (catId: string) => {
+      let total = 0;
+      const stack = [catId];
+      const seen = new Set<string>();
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || seen.has(current)) continue;
+        seen.add(current);
+        total += docCounts[current] ?? 0;
+        childrenOf(current).forEach((c) => stack.push(c.id));
+      }
+      return total;
+    },
+    [childrenOf, docCounts]
+  );
+
+  const hasDocs = useCallback(
+    (catId: string) => countWithDesc(catId) > 0,
+    [countWithDesc]
   );
 
   useEffect(() => {
@@ -144,12 +200,16 @@ function FilesContent() {
               <option value="fr">FR</option>
               <option value="es">ES</option>
               <option value="ar">AR</option>
+              <option value="pt">PT</option>
+              <option value="ru">RU</option>
+              <option value="pl">PL</option>
+              <option value="uk">UA</option>
             </select>
           </div>
         </header>
 
         <section className="pit-card grid gap-3 md:grid-cols-[260px,1fr]">
-          <div className="flex flex-col gap-2 text-sm">
+          <div className="flex flex-col gap-3 text-sm">
             <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pr-2">
               <select
                 className="pit-input"
@@ -177,12 +237,14 @@ function FilesContent() {
                     Uncategorized {`(${uncatCount})`}
                   </option>
                 )}
-                {roots.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                    {docCounts[cat.id] ? ` (${docCounts[cat.id]})` : ""}
-                  </option>
-                ))}
+                {roots
+                  .filter((cat) => hasDocs(cat.id))
+                  .map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {labelFor(cat)}
+                      {countWithDesc(cat.id) ? ` (${countWithDesc(cat.id)})` : ""}
+                    </option>
+                  ))}
               </select>
               {level1 && (
                 <select
@@ -196,12 +258,14 @@ function FilesContent() {
                   style={{ padding: "10px 12px", minWidth: "160px" }}
                 >
                   <option value="">— Child —</option>
-                  {level2Options.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                      {docCounts[cat.id] ? ` (${docCounts[cat.id]})` : ""}
-                    </option>
-                  ))}
+                  {level2Options
+                    .filter((cat) => hasDocs(cat.id))
+                    .map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {labelFor(cat)}
+                        {countWithDesc(cat.id) ? ` (${countWithDesc(cat.id)})` : ""}
+                      </option>
+                    ))}
                 </select>
               )}
               {level2 && (
@@ -215,12 +279,14 @@ function FilesContent() {
                   style={{ padding: "10px 12px", minWidth: "160px" }}
                 >
                   <option value="">— Subchild —</option>
-                  {level3Options.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                      {docCounts[cat.id] ? ` (${docCounts[cat.id]})` : ""}
-                    </option>
-                  ))}
+                  {level3Options
+                    .filter((cat) => hasDocs(cat.id))
+                    .map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {labelFor(cat)}
+                        {countWithDesc(cat.id) ? ` (${countWithDesc(cat.id)})` : ""}
+                      </option>
+                    ))}
                 </select>
               )}
             </div>
@@ -228,7 +294,10 @@ function FilesContent() {
             {error && <p className="pit-error text-xs">{error}</p>}
           </div>
           <div className="min-w-0">
-            <DocumentTable refreshKey={0} categoryFilter={filterIds ?? undefined} />
+            <DocumentTable
+              refreshKey={0}
+              categoryFilter={filterIds ?? undefined}
+            />
           </div>
         </section>
       </main>

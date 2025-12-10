@@ -2,12 +2,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps */
 
 import Image from "next/image";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { getLocaleForLanguage, useLanguage } from "@/lib/language";
 import { createPortal } from "react-dom";
 import viewIcon from "../../images/view.png";
+import saveIcon from "../../images/save.png";
 import binIcon from "../../images/bin.png";
+import deepDiveIcon from "../../images/ai-technology.png";
 
 type ExtractionRow = {
   content: {
@@ -39,6 +41,7 @@ type DocumentRow = {
   error_message: string | null;
   storage_path?: string | null;
   category_id?: string | null;
+  case_id?: string | null;
   created_at: string;
   extra?: ExtractionRow[];
 };
@@ -52,7 +55,11 @@ type TableRow = {
   category_path?: string;
   tasks?: TaskRow[];
   category_id?: string | null;
+  case_id?: string | null;
+  case_title?: string | null;
   category_suggestion_slug?: string | null;
+  category_suggestion_path?: string[] | null;
+  category_suggestion_confidence?: number | null;
   sender?: string;
   topic?: string;
   amount?: string;
@@ -65,11 +72,21 @@ type TableRow = {
   main_summary?: string | null;
   badge_text?: string | null;
   extra_details?: string[];
+  deadlines?: { id?: string | null; date_exact?: string | null; description?: string | null; kind?: string | null }[];
+  actions_required?: { id?: string | null; label?: string | null; due_date?: string | null; severity?: string | null }[];
+  risk_level?: string | null;
+  uncertainty_flags?: string[] | null;
+  amounts?: { value?: number | null; currency?: string | null; direction?: string | null; description?: string | null }[];
+  domain_profile_label?: string | null;
+  tags?: string[];
+  reference_ids?: string[];
+  workflow_status?: string | null;
 };
 
 type Props = {
   refreshKey: number;
   categoryFilter?: string[] | null;
+  caseFilter?: string | null;
   mode?: "home" | "files";
   onProcessingChange?: (hasProcessing: boolean) => void;
 };
@@ -92,14 +109,89 @@ const CATEGORY_OPTIONS = [
   { slug: "sonstiges", label: "Sonstiges" },
 ];
 
+const CATEGORY_CONFIDENCE_THRESHOLD = 0.7;
+
 const slugToLabel = (slug?: string | null) =>
   CATEGORY_OPTIONS.find((c) => c.slug === slug)?.label || "Sonstiges";
+
+const CATEGORY_TRANSLATIONS: Record<string, { de: string; en: string }> = {
+  // Level 1
+  "Identity & Civil Status": { de: "Identität & Status", en: "Identity & Civil Status" },
+  "Work & Income": { de: "Arbeit & Einkommen", en: "Work & Income" },
+  "Housing & Property": { de: "Wohnen & Eigentum", en: "Housing & Property" },
+  "Health & Medical": { de: "Gesundheit & Medizin", en: "Health & Medical" },
+  "Insurance (non-health)": { de: "Versicherung (ohne Gesundheit)", en: "Insurance (non-health)" },
+  "Finance & Assets": { de: "Finanzen & Vermögen", en: "Finance & Assets" },
+  "Government, Tax & Public Admin": { de: "Behörden, Steuern & Verwaltung", en: "Government, Tax & Public Admin" },
+  "Government, Public Benefits (general)": {
+    de: "Behörden, Sozialleistungen (allgemein)",
+    en: "Government, Public Benefits (general)",
+  },
+  "Education & Training": { de: "Bildung & Weiterbildung", en: "Education & Training" },
+  "Family & Social": { de: "Familie & Soziales", en: "Family & Social" },
+  "Utilities & Telecom": { de: "Versorger & Telekom", en: "Utilities & Telecom" },
+  "Purchases & Subscriptions": { de: "Einkäufe & Abos", en: "Purchases & Subscriptions" },
+  "Legal & Disputes": { de: "Recht & Streitfälle", en: "Legal & Disputes" },
+  "Other & Miscellaneous": { de: "Sonstiges", en: "Other & Miscellaneous" },
+  // Level 2 (common seeds)
+  "Employment Contracts": { de: "Arbeitsverträge", en: "Employment Contracts" },
+  "Unemployment Benefits": { de: "Arbeitslosengeld", en: "Unemployment Benefits" },
+  "Public Benefits (general)": { de: "Sozialleistungen (allgemein)", en: "Public Benefits (general)" },
+  "Income Tax": { de: "Einkommensteuer", en: "Income Tax" },
+  "Other Taxes & Fees": { de: "Sonstige Steuern & Gebühren", en: "Other Taxes & Fees" },
+  "Rent & Service Charges": { de: "Miete & Nebenkosten", en: "Rent & Service Charges" },
+  "Rental Contracts": { de: "Mietverträge", en: "Rental Contracts" },
+  "Landlord Communication": { de: "Vermieter-Kommunikation", en: "Landlord Communication" },
+  "Health Insurance": { de: "Krankenversicherung", en: "Health Insurance" },
+  "Medical Bills & Statements": { de: "Arzt-/Krankenhausrechnungen", en: "Medical Bills & Statements" },
+  "Bank Accounts": { de: "Bankkonten", en: "Bank Accounts" },
+  "Loans & Credit": { de: "Kredite & Darlehen", en: "Loans & Credit" },
+  "Cards & Payment": { de: "Karten & Zahlungen", en: "Cards & Payment" },
+  "Financial Summaries": { de: "Finanzübersichten", en: "Financial Summaries" },
+  "Court & Police Docs": { de: "Gericht & Polizei", en: "Court & Police Docs" },
+  // Level 3 examples (extend as needed)
+  unemployment_benefit_decision: { de: "Arbeitslosengeld-Bescheid", en: "Unemployment Benefit Decision" },
+  "Unemployment Benefit Decision": {
+    de: "Arbeitslosengeld-Bescheid",
+    en: "Unemployment Benefit Decision",
+  },
+  "Unemployment Benefit Change Notice": {
+    de: "Änderungsbescheid Arbeitslosengeld",
+    en: "Unemployment Benefit Change Notice",
+  },
+  "Unemployment Benefit Notice": { de: "Bescheid Arbeitslosengeld", en: "Unemployment Benefit Notice" },
+  "Unemployment Benefit": { de: "Arbeitslosengeld", en: "Unemployment Benefit" },
+};
+
+const translateCategorySegment = (segment: string, lang: string) => {
+  const key = segment.trim();
+  const entry =
+    CATEGORY_TRANSLATIONS[key] ||
+    // case-insensitive lookup to cover slight formatting differences
+    Object.entries(CATEGORY_TRANSLATIONS).find(([k]) => k.toLowerCase() === key.toLowerCase())?.[1];
+  if (entry) {
+    return lang === "de" ? entry.de : entry.en;
+  }
+  return segment;
+};
+
+const formatSegmentDisplay = (segment: string, lang: string) => {
+  const translated = translateCategorySegment(segment, lang);
+  if (translated !== segment) return translated;
+  const cleaned = segment.replace(/[_-]+/g, " ").trim();
+  if (!cleaned) return segment;
+  return cleaned
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
+};
 
 export default function DocumentTable({
   refreshKey,
   categoryFilter,
-  mode = "files",
+    mode = "files",
   onProcessingChange,
+  caseFilter,
 }: Props) {
   const { lang, t } = useLanguage();
   const [rows, setRows] = useState<TableRow[]>([]);
@@ -109,7 +201,10 @@ export default function DocumentTable({
   const [previewName, setPreviewName] = useState<string | null>(null);
   const [busyRow, setBusyRow] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
-  const [categoryOptions, setCategoryOptions] = useState<{ id: string; path: string }[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<
+    { id: string; path: string; displayPath: string; displayLabel: string }[]
+  >([]);
+  const [caseOptions, setCaseOptions] = useState<{ id: string; title: string; status: string }[]>([]);
   const [expandedCompleted, setExpandedCompleted] = useState<Set<string>>(new Set());
   const [hiddenDocIds, setHiddenDocIds] = useState<Set<string>>(new Set());
   const [taskModal, setTaskModal] = useState<{
@@ -119,9 +214,64 @@ export default function DocumentTable({
     urgency: string;
   } | null>(null);
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set());
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [isMounted, setIsMounted] = useState(false);
   const [flashingComplete, setFlashingComplete] = useState<Set<string>>(new Set());
   const [recentlyDone, setRecentlyDone] = useState<Set<string>>(new Set());
+  const [applyBusy, setApplyBusy] = useState<Set<string>>(new Set());
+  const [reprocessBusy, setReprocessBusy] = useState<Set<string>>(new Set());
+  const [chatForDoc, setChatForDoc] = useState<string | null>(null);
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant" | "system"; content: string }[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatError, setChatError] = useState<string | null>(null);
+
+  // Auto-collapse expanded paths after a short delay to avoid clutter.
+  useEffect(() => {
+    if (!expandedPaths.size) return;
+    const timer = setTimeout(() => {
+      setExpandedPaths(new Set());
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [expandedPaths]);
+
+  const cleanupEmptyCase = useCallback(
+    async (caseId?: string | null, supabase?: ReturnType<typeof supabaseBrowser>, userIdParam?: string | null) => {
+      if (!caseId || !supabase || !userIdParam) return;
+      try {
+        const [{ count: docCount, error: docErr }, { count: linkCount, error: linkErr }] = await Promise.all([
+          supabase
+            .from("documents")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userIdParam)
+            .eq("case_id", caseId),
+          supabase
+            .from("case_documents")
+            .select("id", { count: "exact", head: true })
+            .eq("case_id", caseId),
+        ]);
+        if (docErr && (docErr as { code?: string }).code !== "42P01") throw docErr;
+        if (linkErr && (linkErr as { code?: string }).code !== "42P01") throw linkErr;
+        const total = (docCount ?? 0) + (linkCount ?? 0);
+        if (total === 0) {
+          try {
+            await supabase.from("case_events").delete().eq("case_id", caseId);
+          } catch (evErr) {
+            console.warn("case_event cleanup skipped", evErr);
+          }
+          try {
+            await supabase.from("cases").delete().eq("id", caseId);
+          } catch (caseErr) {
+            console.warn("case cleanup skipped", caseErr);
+          }
+        }
+      } catch (err) {
+        console.warn("cleanupEmptyCase skipped", err);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (onProcessingChange) {
@@ -150,6 +300,126 @@ export default function DocumentTable({
     setHiddenDocIds(next);
     if (typeof window !== "undefined") {
       localStorage.setItem("docflowHiddenDocs", JSON.stringify(Array.from(next)));
+    }
+  };
+
+  const ensureCategoryPath = async (userId: string, path: string[]) => {
+    const supabase = supabaseBrowser();
+    const { data: existing, error } = await supabase
+      .from("categories")
+      .select("id, name, parent_id")
+      .eq("user_id", userId);
+    if (error) throw error;
+    const rows: CategoryRow[] = Array.isArray(existing) ? existing : [];
+
+    let parentId: string | null = null;
+    let lastId: string | null = null;
+    for (const segment of path) {
+      const match = rows.find(
+        (c) => c.parent_id === parentId && c.name.trim().toLowerCase() === segment.toLowerCase()
+      );
+      if (match) {
+        parentId = match.id;
+        lastId = match.id;
+        continue;
+      }
+      const insert = await supabase
+        .from("categories")
+        .insert({ user_id: userId, name: segment, parent_id: parentId })
+        .select("id")
+        .single();
+      if (insert.error) throw insert.error;
+      if (insert.data?.id) {
+        const createdId = insert.data.id as string;
+        rows.push({ id: createdId, name: segment, parent_id: parentId });
+        parentId = createdId;
+        lastId = createdId;
+      }
+    }
+    return lastId;
+  };
+
+  const applySuggestion = async (row: TableRow) => {
+    const suggestionPath =
+      row.category_suggestion_path && row.category_suggestion_path.length
+        ? row.category_suggestion_path
+        : row.category_suggestion_slug
+          ? [slugToLabel(row.category_suggestion_slug)]
+          : null;
+    if (!suggestionPath || !suggestionPath.length) return;
+    setApplyBusy((prev) => new Set(prev).add(row.id));
+    try {
+      const supabase = supabaseBrowser();
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) throw new Error("Not logged in.");
+      const categoryId = await ensureCategoryPath(user.id, suggestionPath);
+      if (categoryId) {
+        // Persist the chosen label in the active UI language so we don't fall back to English.
+        try {
+          const label =
+            suggestionPath[suggestionPath.length - 1] && suggestionPath[suggestionPath.length - 1].trim()
+              ? formatSegmentDisplay(suggestionPath[suggestionPath.length - 1], lang)
+              : formatSegmentDisplay(suggestionPath.join(" / "), lang);
+          await supabase
+            .from("category_translations")
+            .upsert(
+              {
+                user_id: user.id,
+                category_id: categoryId,
+                lang,
+                label,
+              },
+              { onConflict: "user_id,category_id,lang" }
+            );
+        } catch (transErr) {
+          console.warn("category translation upsert skipped", transErr);
+        }
+        const { error: updateError } = await supabase
+          .from("documents")
+          .update({ category_id: categoryId })
+          .eq("id", row.id);
+        if (updateError) throw updateError;
+        fetchDocs(true);
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Failed to apply suggestion");
+    } finally {
+      setApplyBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
+    }
+  };
+
+  const reprocessDoc = async (row: TableRow) => {
+    setReprocessBusy((prev) => new Set(prev).add(row.id));
+    try {
+      const res = await fetch("/api/process-document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: row.id, preferredLanguage: lang }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to reprocess (status ${res.status})`);
+      }
+      // Trigger refresh to pick up new extraction/category
+      fetchDocs(true);
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Failed to reprocess document");
+    } finally {
+      setReprocessBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     }
   };
 
@@ -297,13 +567,7 @@ const computeDueBadge = (
   return { label: t("dueInDays", { days: daysDiff }), tone: "muted" as const };
 };
 
-  const getLastSegment = (path?: string) => {
-    if (!path) return t("uncategorized");
-    const parts = path.split(" / ").filter(Boolean);
-    return parts[parts.length - 1] || path;
-  };
-
-  const fetchDocs = useCallback(
+const fetchDocs = useCallback(
     async (showLoading: boolean) => {
       let timeout: NodeJS.Timeout | null = null;
       if (showLoading) {
@@ -316,24 +580,24 @@ const computeDueBadge = (
       }
       try {
         const supabase = supabaseBrowser();
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-      if (userError) throw userError;
-      if (!user) {
-        setUserId(null);
-        setError(t("notLoggedIn"));
-        if (timeout) clearTimeout(timeout);
-        setLoading(false);
-        return;
-      }
-      setUserId(user.id);
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+        if (userError) throw userError;
+        if (!user) {
+          setUserId(null);
+          setError(t("notLoggedIn"));
+          if (timeout) clearTimeout(timeout);
+          setLoading(false);
+          return;
+        }
+        setUserId(user.id);
 
         const docsQuery = supabase
           .from("documents")
           .select(
-            "id, title, status, error_message, storage_path, category_id, created_at, extra:extractions(content, created_at)"
+            "id, title, status, error_message, storage_path, category_id, case_id, created_at, extra:extractions(content, created_at)"
           )
           .eq("user_id", user.id)
           .order("created_at", { ascending: false });
@@ -343,17 +607,26 @@ const computeDueBadge = (
         } else if (Array.isArray(categoryFilter) && categoryFilter.length > 0) {
           docsQuery.in("category_id", categoryFilter);
         }
+        if (caseFilter) {
+          docsQuery.eq("case_id", caseFilter);
+        }
 
-        const [docsRes, catsRes, tasksRes] = await Promise.all([
+        const [docsRes, catsRes, catTransRes, tasksRes, casesRes] = await Promise.all([
           docsQuery,
           supabase
             .from("categories")
             .select("id, name, parent_id")
             .eq("user_id", user.id),
           supabase
+            .from("category_translations")
+            .select("category_id, label, lang")
+            .eq("user_id", user.id)
+            .eq("lang", lang),
+          supabase
             .from("tasks")
             .select("id, document_id, title, status, due_date")
             .eq("user_id", user.id),
+          supabase.from("cases").select("id, title, status").eq("user_id", user.id),
         ]);
 
         if (docsRes.error) throw docsRes.error;
@@ -361,78 +634,103 @@ const computeDueBadge = (
           throw catsRes.error;
         if (tasksRes.error && (tasksRes.error as { code?: string }).code !== "42P01")
           throw tasksRes.error;
+        if (catTransRes.error && (catTransRes.error as { code?: string }).code !== "42P01")
+          throw catTransRes.error;
+        if (casesRes.error && (casesRes.error as { code?: string }).code !== "42P01")
+          throw casesRes.error;
 
         const catMap = new Map<string, CategoryRow>();
         const cats = (catsRes.data as CategoryRow[] | null) ?? [];
         cats.forEach((c) => {
           catMap.set(c.id, c);
         });
-
-        // Build keep set: categories used by docs + their ancestors
-        const usedCats = new Set<string>();
-        (docsRes.data as DocumentRow[] | null)?.forEach((d) => {
-          if (d.category_id) usedCats.add(d.category_id);
-        });
-        const keep = new Set<string>();
-        const addAncestors = (id: string) => {
-          let current: string | null | undefined = id;
-          const visited = new Set<string>();
-          while (current) {
-            if (visited.has(current)) break;
-            visited.add(current);
-            keep.add(current);
-            const parent: string | null | undefined = catMap.get(current)?.parent_id;
-            current = parent;
-          }
-        };
-        usedCats.forEach((id) => addAncestors(id));
-
-        // Delete truly unused categories (not in keep set)
-        try {
-          const removeIds = cats.map((c) => c.id).filter((id) => !keep.has(id));
-          if (removeIds.length) {
-            await supabase.from("categories").delete().in("id", removeIds);
-            // remove from local map too
-            removeIds.forEach((id) => catMap.delete(id));
-          }
-        } catch (cleanupErr) {
-          console.error("category cleanup failed", cleanupErr);
-        }
-
-        const catOptions: { id: string; path: string }[] = [];
-        catMap.forEach((_, id) => {
-          const p = (() => {
-            const parts: string[] = [];
-            let current: string | null | undefined = id;
-            const visited = new Set<string>();
-            while (current) {
-              if (visited.has(current)) break;
-              visited.add(current);
-              const cat = catMap.get(current);
-              if (!cat) break;
-              parts.unshift(cat.name);
-              current = cat.parent_id;
+        const translationMap = new Map<string, string>();
+        (catTransRes.data as { category_id: string; label: string; lang: string }[] | null)?.forEach(
+          (t) => {
+            if (t?.category_id && typeof t.label === "string") {
+              translationMap.set(t.category_id, t.label);
             }
-            return parts.join(" / ");
-          })();
-          catOptions.push({ id, path: p });
-        });
-        setCategoryOptions(catOptions.sort((a, b) => a.path.localeCompare(b.path)));
+          }
+        );
 
-        const buildPath = (catId?: string | null) => {
-          if (!catId) return undefined;
-          const parts: string[] = [];
-          let current: string | null | undefined = catId;
+        const buildSegments = (id: string) => {
+          const parts: { name: string; display: string }[] = [];
+          let current: string | null | undefined = id;
           const visited = new Set<string>();
           while (current) {
             if (visited.has(current)) break;
             visited.add(current);
             const cat = catMap.get(current);
             if (!cat) break;
-            parts.unshift(cat.name);
+            const display = translationMap.get(current) ?? formatSegmentDisplay(cat.name, lang);
+            parts.unshift({ name: cat.name, display });
             current = cat.parent_id;
           }
-          return parts.length ? parts.join(" / ") : undefined;
+          return parts;
+        };
+
+        const catOptions: {
+          id: string;
+          path: string;
+          displayPath: string;
+          displayLabel: string;
+        }[] = [];
+
+        catMap.forEach((_, id) => {
+          const parts = buildSegments(id);
+          const path = parts.map((p) => p.name).join(" / ");
+          const displayPath = parts.map((p) => p.display).join(" / ");
+          const displayLabel =
+            parts.length > 0
+              ? parts[parts.length - 1].display
+              : formatSegmentDisplay(path || "", lang);
+          catOptions.push({
+            id,
+            path,
+            displayPath,
+            displayLabel,
+          });
+        });
+        setCategoryOptions(catOptions.sort((a, b) => a.displayPath.localeCompare(b.displayPath)));
+        const caseOpts = ((casesRes.data as { id: string; title: string; status: string }[] | null) ?? []).sort((a, b) =>
+          a.title.localeCompare(b.title)
+        );
+        setCaseOptions(caseOpts);
+
+        // Best-effort: persist missing translations so future renders are localized without code maps
+        if (lang !== "en") {
+          const missingTranslations: { user_id: string; category_id: string; lang: string; label: string }[] = [];
+          catMap.forEach((cat, id) => {
+            if (translationMap.has(id)) return;
+            const translated =
+              translateCategorySegment(cat.name, lang) !== cat.name
+                ? translateCategorySegment(cat.name, lang)
+                : formatSegmentDisplay(cat.name, lang);
+            if (translated && translated.trim()) {
+              missingTranslations.push({
+                user_id: user.id,
+                category_id: id,
+                lang,
+                label: translated.trim(),
+              });
+              translationMap.set(id, translated.trim());
+            }
+          });
+          if (missingTranslations.length) {
+            try {
+              await supabase
+                .from("category_translations")
+                .upsert(missingTranslations, { onConflict: "user_id,category_id,lang" });
+            } catch (transErr) {
+              console.warn("category translation upsert skipped", transErr);
+            }
+          }
+        }
+
+        const buildPath = (catId?: string | null) => {
+          if (!catId) return undefined;
+          const parts = buildSegments(catId);
+          return parts.length ? `/${parts.map((p) => p.display).join("/")}` : undefined;
         };
 
         const tasksByDoc = new Map<string, TaskRow[]>();
@@ -463,6 +761,48 @@ const computeDueBadge = (
                     (s) => typeof s === "string" && s.trim().length > 0
                   )
                 : [];
+            const deadlinesArr = Array.isArray((latest as any)?.deadlines)
+              ? ((latest as any)?.deadlines as any[])
+                  .filter((d) => d && typeof d === "object")
+                  .map((d) => ({
+                    id: (d as any)?.id ?? null,
+                    date_exact:
+                      typeof (d as any)?.date_exact === "string" && (d as any)?.date_exact.trim()
+                        ? ((d as any)?.date_exact as string).trim()
+                        : null,
+                    description:
+                      typeof (d as any)?.description === "string" && (d as any)?.description.trim()
+                        ? ((d as any)?.description as string).trim()
+                        : null,
+                    kind:
+                      typeof (d as any)?.kind === "string" && (d as any)?.kind.trim()
+                        ? ((d as any)?.kind as string).trim()
+                        : null,
+                  }))
+              : [];
+            const earliestDeadline = deadlinesArr
+              .map((d) => d.date_exact)
+              .filter((d): d is string => !!d && !Number.isNaN(new Date(d).getTime()))
+              .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0] ?? null;
+            const amountsArr = Array.isArray((latest as any)?.amounts)
+              ? ((latest as any)?.amounts as any[])
+                  .filter((a) => a && typeof a === "object")
+                  .map((a) => ({
+                    value: typeof (a as any)?.value === "number" ? (a as any)?.value : null,
+                    currency:
+                      typeof (a as any)?.currency === "string" && (a as any)?.currency.trim()
+                        ? ((a as any)?.currency as string).trim()
+                        : null,
+                    direction:
+                      typeof (a as any)?.direction === "string" && (a as any)?.direction.trim()
+                        ? ((a as any)?.direction as string).trim()
+                        : null,
+                    description:
+                      typeof (a as any)?.description === "string" && (a as any)?.description.trim()
+                        ? ((a as any)?.description as string).trim()
+                        : null,
+                  }))
+              : [];
             const sender =
               typeof keyFields.sender === "string" && keyFields.sender.trim()
                 ? (keyFields.sender as string).trim()
@@ -471,6 +811,11 @@ const computeDueBadge = (
               typeof keyFields.topic === "string" && keyFields.topic.trim()
                 ? (keyFields.topic as string).trim()
                 : undefined;
+            const domainProfile =
+              typeof (latest as any)?.key_fields?.domain_profile_label === "string" &&
+              ((latest as any)?.key_fields?.domain_profile_label as string).trim()
+                ? ((latest as any)?.key_fields?.domain_profile_label as string).trim()
+                : null;
             const amount =
               typeof keyFields.amount_total === "number"
                 ? `${keyFields.amount_total} ${(keyFields.currency as string | undefined) || ""}`.trim()
@@ -478,7 +823,7 @@ const computeDueBadge = (
             const due =
               typeof keyFields.due_date === "string" && keyFields.due_date.trim()
                 ? (keyFields.due_date as string).trim()
-                : null;
+                : earliestDeadline;
             const actionRequired =
               keyFields.action_required === true ||
               (tasksByDoc.get(doc.id) ?? []).some((t) => t.status !== "done");
@@ -489,6 +834,17 @@ const computeDueBadge = (
             const categorySuggestionSlug =
               typeof (latest as any)?.category_suggestion?.slug === "string"
                 ? ((latest as any)?.category_suggestion?.slug as string)
+                : null;
+            const categorySuggestionPath =
+              Array.isArray((latest as any)?.category_suggestion?.path) &&
+              ((latest as any)?.category_suggestion?.path as string[]).length
+                ? ((latest as any)?.category_suggestion?.path as string[]).filter(
+                    (s) => typeof s === "string" && s.trim().length > 0
+                  )
+                : null;
+            const categorySuggestionConfidence =
+              typeof (latest as any)?.category_suggestion?.confidence === "number"
+                ? ((latest as any)?.category_suggestion?.confidence as number)
                 : null;
             const followup =
               typeof (latest as any)?.key_fields?.follow_up === "string" &&
@@ -503,6 +859,10 @@ const computeDueBadge = (
               error_message: doc.error_message,
               storage_path: doc.storage_path ?? undefined,
               category_id: doc.category_id ?? null,
+              case_id: doc.case_id ?? null,
+              case_title: doc.case_id
+                ? caseOpts.find((c) => c.id === doc.case_id)?.title ?? null
+                : null,
               category_path: buildPath(doc.category_id ?? undefined),
               tasks: tasksByDoc.get(doc.id) ?? [],
               created_at: doc.created_at,
@@ -513,11 +873,59 @@ const computeDueBadge = (
               action_required: actionRequired,
               action_text: actionText,
               category_suggestion_slug: categorySuggestionSlug,
+              category_suggestion_path: categorySuggestionPath,
+              category_suggestion_confidence: categorySuggestionConfidence,
               followup_note: followup,
               summary: mainSummary,
               main_summary: mainSummary,
               badge_text: badgeText,
               extra_details: extraDetails,
+              deadlines: deadlinesArr,
+              actions_required: Array.isArray((latest as any)?.actions_required)
+                ? ((latest as any)?.actions_required as any[])
+                    .filter((a) => a && typeof a === "object")
+                    .map((a) => ({
+                      id: (a as any)?.id ?? null,
+                      label:
+                        typeof (a as any)?.label === "string" && (a as any)?.label.trim()
+                          ? ((a as any)?.label as string).trim()
+                          : null,
+                      due_date:
+                        typeof (a as any)?.due_date === "string" && (a as any)?.due_date.trim()
+                          ? ((a as any)?.due_date as string).trim()
+                          : null,
+                      severity:
+                        typeof (a as any)?.severity === "string" && (a as any)?.severity.trim()
+                          ? ((a as any)?.severity as string).trim()
+                          : null,
+                    }))
+                : [],
+              risk_level:
+                typeof (latest as any)?.risk_level === "string"
+                  ? ((latest as any)?.risk_level as string)
+                  : null,
+              uncertainty_flags: Array.isArray((latest as any)?.uncertainty_flags)
+                ? ((latest as any)?.uncertainty_flags as string[]).filter(
+                    (s) => typeof s === "string" && s.trim().length > 0
+                  )
+                : null,
+              amounts: amountsArr,
+              domain_profile_label: domainProfile,
+              tags:
+                Array.isArray((latest as any)?.tags) && (latest as any)?.tags.length
+                  ? ((latest as any)?.tags as string[]).filter((s) => typeof s === "string" && s.trim().length > 0)
+                  : [],
+              reference_ids:
+                (latest as any)?.key_fields?.reference_ids && typeof (latest as any)?.key_fields?.reference_ids === "object"
+                  ? (Object.values((latest as any)?.key_fields?.reference_ids as Record<string, unknown>).filter(
+                      (v): v is string => typeof v === "string" && !!v.trim()
+                    ) ?? [])
+                  : ([] as string[]),
+              workflow_status:
+                typeof (latest as any)?.key_fields?.workflow_status === "string" &&
+                ((latest as any)?.key_fields?.workflow_status as string).trim()
+                  ? ((latest as any)?.key_fields?.workflow_status as string).trim()
+                  : null,
             };
           }) ?? [];
 
@@ -530,7 +938,7 @@ const computeDueBadge = (
         if (showLoading) setLoading(false);
       }
     },
-    [categoryFilter]
+    [categoryFilter, lang, t]
   );
 
   const pickLatestExtraction = (extras?: ExtractionRow[] | null) => {
@@ -640,10 +1048,33 @@ const computeDueBadge = (
             } else if (dueBadge) {
               badges.push(dueBadge);
             }
+            if (row.amounts && row.amounts.length) {
+              const amt = row.amounts.find((a) => typeof a.value === "number") || row.amounts[0];
+              if (amt?.value !== undefined && amt.value !== null) {
+                const label = `${amt.value.toFixed(2)} ${amt.currency || ""}`.trim();
+                badges.push({ label, tone: "info" });
+              }
+            }
+            if (row.risk_level && row.risk_level.toLowerCase() !== "none") {
+              const tone =
+                row.risk_level.toLowerCase() === "high" || row.risk_level.toLowerCase() === "medium"
+                  ? "warn"
+                  : "muted";
+              badges.push({ label: `Risk: ${row.risk_level}`, tone });
+            }
+            if (row.uncertainty_flags && row.uncertainty_flags.length) {
+              badges.push({
+                label: `Uncertainty: ${row.uncertainty_flags.slice(0, 2).join(", ")}`,
+                tone: "muted",
+              });
+            }
             if (row.followup_note) {
               badges.push({ label: row.followup_note, tone: "muted" });
             } else if (!dueBadge && !row.badge_text) {
               badges.push({ label: t("infoOnly"), tone: "muted" });
+            }
+            if (row.workflow_status) {
+              badges.push({ label: row.workflow_status, tone: "muted" });
             }
             // Deduplicate badges by label to avoid duplicates
             const seen = new Set<string>();
@@ -652,43 +1083,97 @@ const computeDueBadge = (
               seen.add(b.label);
               return true;
             });
-            const currentCategory = row.category_path ? getLastSegment(row.category_path) : null;
-            const suggestedSegment = row.category_suggestion_slug
-              ? slugToLabel(row.category_suggestion_slug)
-              : null;
+            const currentCategory = row.category_path ? row.category_path : null;
+            const catOption = categoryOptions.find((o) => o.id === row.category_id);
+            const fullPath = catOption?.displayPath
+              ? `/${catOption.displayPath}`
+              : row.domain_profile_label
+                ? `/${formatSegmentDisplay(row.domain_profile_label, lang)}`
+                : `/${t("uncategorized")}`;
+            const leafPath =
+              catOption?.displayLabel ||
+              (row.domain_profile_label ? formatSegmentDisplay(row.domain_profile_label, lang) : t("uncategorized"));
+            const isPathExpanded = expandedPaths.has(row.id);
+            const shownPath = isPathExpanded ? fullPath : `/${leafPath}`;
+
+            const suggestedSegment =
+              row.category_suggestion_path && row.category_suggestion_path.length
+                ? row.category_suggestion_path
+                    .map((seg) => formatSegmentDisplay(seg, lang))
+                    .join(" / ")
+                : row.category_suggestion_slug
+                  ? slugToLabel(row.category_suggestion_slug)
+                  : null;
 
             return (
               <tr key={row.id}>
                 <td className="align-top text-left">
-                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2">
                     <div className="font-medium">{row.title}</div>
                     {row.status === "done" && (
                       <div className="flex flex-wrap items-center gap-2">
-                        <select
-                          className="pit-input"
-                          value={row.category_id ?? ""}
-                          onChange={(e) =>
-                            handleCategoryChange(row, e.target.value || null)
+                        <div
+                          className="text-sm pit-subtitle"
+                          style={{
+                            minWidth: "200px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            color: "rgba(0,0,0,0.55)",
+                          }}
+                          title={
+                            categoryOptions.find((o) => o.id === row.category_id)?.displayPath ||
+                            t("uncategorized")
                           }
-                          style={{ padding: "6px 10px", minWidth: "160px" }}
-                          disabled={busyRow === row.id}
                         >
-                          <option value="">Uncategorized</option>
-                          {categoryOptions.map((opt) => (
-                            <option key={opt.id} value={opt.id} title={opt.path}>
-                              {getLastSegment(opt.path)}
-                            </option>
-                          ))}
-                        </select>
+                          <Image
+                            src={saveIcon}
+                            alt="Category"
+                            width={14}
+                            height={14}
+                            style={{ opacity: 0.55, filter: "grayscale(1)" }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedPaths((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(row.id)) next.delete(row.id);
+                                else next.add(row.id);
+                                return next;
+                              })
+                            }
+                            title={fullPath}
+                            aria-label={isPathExpanded ? t("hideDetails") : t("showDetails")}
+                            style={{
+                              border: "none",
+                              background: "transparent",
+                              padding: "0 4px",
+                              color: "rgba(0,0,0,0.75)",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            <span style={{ whiteSpace: "pre-wrap", textAlign: "left" }}>{shownPath}</span>
+                            <span style={{ fontSize: "12px", display: "inline-block", transform: isPathExpanded ? "rotate(90deg)" : "rotate(0deg)" }}>
+                              ▸
+                            </span>
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {/* Case UI hidden for now */}
+                        </div>
                       </div>
                     )}
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        onClick={() => handleDelete(row)}
-                        className="text-[12px]"
-                        disabled={busyRow === row.id}
-                        aria-label="Delete"
-                        style={{
+                      <div className="flex items-center justify-start gap-4">
+                        <button
+                    onClick={() => handleDelete(row)}
+                    className="text-[12px]"
+                    disabled={busyRow === row.id}
+                aria-label="Delete"
+                style={{
                           background: "transparent",
                           border: "none",
                           padding: 0,
@@ -718,9 +1203,27 @@ const computeDueBadge = (
                         }}
                       >
                         <Image src={viewIcon} alt="Preview" width={29} height={29} />
-                      </button>
+                        </button>
+                        <button
+                          onClick={() => openChat(row)}
+                          className="text-[12px]"
+                          disabled={busyRow === row.id}
+                          aria-label="Deep dive chat"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            lineHeight: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            cursor: "pointer",
+                            opacity: busyRow === row.id ? 0.6 : 1,
+                          }}
+                        >
+                          <Image src={deepDiveIcon} alt="Deep Dive" width={20} height={20} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
                 </td>
                 <td className="align-top text-left">
                   <div className="flex flex-col gap-2">
@@ -758,6 +1261,36 @@ const computeDueBadge = (
                     ) : gist ? (
                       <>
                         <span>{gist}</span>
+                        {(row.tags?.length || row.reference_ids?.length) ? (
+                          <div className="flex flex-wrap gap-2 text-[11px] text-[rgba(0,0,0,0.6)]">
+                            {row.tags?.slice(0, 4).map((tag, idx) => (
+                              <span
+                                key={`${row.id}-tag-${idx}`}
+                                style={{
+                                  padding: "4px 8px",
+                                  borderRadius: "999px",
+                                  border: "1px solid rgba(0,0,0,0.08)",
+                                  background: "rgba(0,0,0,0.02)",
+                                }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {row.reference_ids?.slice(0, 3).map((rid, idx) => (
+                              <span
+                                key={`${row.id}-ref-${idx}`}
+                                style={{
+                                  padding: "4px 8px",
+                                  borderRadius: "6px",
+                                  border: "1px dashed rgba(0,0,0,0.15)",
+                                  background: "rgba(0,0,0,0.01)",
+                                }}
+                              >
+                                {rid}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                         {buildDetailBullets(row.main_summary || row.summary, row.extra_details, pendingTasks.map((t) => t.title)).length >
                           0 && (
                           <>
@@ -797,6 +1330,23 @@ const computeDueBadge = (
                                       {bullet}
                                     </li>
                                   ))}
+                                  {row.deadlines && row.deadlines.length
+                                    ? row.deadlines.slice(0, 3).map((d, idx) => (
+                                        <li key={`${row.id}-deadline-${idx}`} style={{ listStyleType: "disc" }}>
+                                          {formatDate(d.date_exact ?? null, lang) || d.date_exact || ""} {d.description || ""}
+                                        </li>
+                                      ))
+                                    : null}
+                                  {row.actions_required && row.actions_required.length
+                                    ? row.actions_required.slice(0, 3).map((a, idx) => (
+                                        <li key={`${row.id}-action-${idx}`} style={{ listStyleType: "disc" }}>
+                                          {a.label ||
+                                            t("actionNeededBy", {
+                                              date: formatDate(a.due_date ?? null, lang) ?? "",
+                                            }).trim()}
+                                        </li>
+                                      ))
+                                    : null}
                                 </ul>
                               </div>
                             )}
@@ -1063,6 +1613,7 @@ const computeDueBadge = (
 
   const handleDelete = async (row: TableRow) => {
     if (!row.storage_path) return;
+    const previousCaseId = row.case_id;
     setBusyRow(row.id);
     try {
       const supabase = supabaseBrowser();
@@ -1086,12 +1637,159 @@ const computeDueBadge = (
         .eq("id", row.id);
       if (deleteError) throw deleteError;
 
+      await cleanupEmptyCase(previousCaseId, supabase, user.id);
       fetchDocs(false);
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to delete document");
     } finally {
       setBusyRow(null);
+    }
+  };
+
+  const uiText = useMemo(
+    () => ({
+      title: {
+        de: "Deep Dive",
+        en: "Deep Dive",
+        ro: "Analiză detaliată",
+        tr: "Derin inceleme",
+        fr: "Analyse détaillée",
+        es: "Análisis detallado",
+        ar: "تحليل متعمق",
+        pt: "Análise detalhada",
+        ru: "Глубокий разбор",
+        pl: "Dogłębna analiza",
+        uk: "Детальний розбір",
+      },
+      close: {
+        de: "Schließen",
+        en: "Close",
+        ro: "Închide",
+        tr: "Kapat",
+        fr: "Fermer",
+        es: "Cerrar",
+        ar: "إغلاق",
+        pt: "Fechar",
+        ru: "Закрыть",
+        pl: "Zamknij",
+        uk: "Закрити",
+      },
+      loading: {
+        de: "Chat wird geladen…",
+        en: "Loading chat…",
+        ro: "Se încarcă chat-ul…",
+        tr: "Sohbet yükleniyor…",
+        fr: "Chargement du chat…",
+        es: "Cargando chat…",
+        ar: "يتم تحميل المحادثة…",
+        pt: "Carregando chat…",
+        ru: "Загрузка чата…",
+        pl: "Ładowanie czatu…",
+        uk: "Завантаження чату…",
+      },
+      ask: {
+        de: "Stelle eine Frage zu diesem Dokument.",
+        en: "Ask a question about this document.",
+        ro: "Pune o întrebare despre acest document.",
+        tr: "Bu belge hakkında soru sor.",
+        fr: "Posez une question sur ce document.",
+        es: "Haz una pregunta sobre este documento.",
+        ar: "اطرح سؤالاً حول هذا المستند.",
+        pt: "Faça uma pergunta sobre este documento.",
+        ru: "Задайте вопрос об этом документе.",
+        pl: "Zadaj pytanie o ten dokument.",
+        uk: "Поставте запитання про цей документ.",
+      },
+      placeholder: {
+        de: "Frage nach Fristen, Beträgen, Aufgaben…",
+        en: "Ask about deadlines, amounts, tasks…",
+        ro: "Întreabă despre termene, sume, sarcini…",
+        tr: "Son tarihler, tutarlar, görevler hakkında sor…",
+        fr: "Demandez sur les délais, montants, tâches…",
+        es: "Pregunta sobre plazos, importes, tareas…",
+        ar: "اسأل عن المواعيد النهائية والمبالغ والمهام…",
+        pt: "Pergunte sobre prazos, valores, tarefas…",
+        ru: "Спросите о сроках, суммах, задачах…",
+        pl: "Zapytaj o terminy, kwoty, zadania…",
+        uk: "Запитайте про дедлайни, суми, завдання…",
+      },
+      send: {
+        de: "Senden",
+        en: "Send",
+        ro: "Trimite",
+        tr: "Gönder",
+        fr: "Envoyer",
+        es: "Enviar",
+        ar: "إرسال",
+        pt: "Enviar",
+        ru: "Отправить",
+        pl: "Wyślij",
+        uk: "Надіслати",
+      },
+    }),
+    []
+  );
+
+  const openChat = async (row: TableRow) => {
+    setChatForDoc(row.id);
+    setChatLoading(true);
+    setChatThreadId(null);
+    setChatMessages([]);
+    setChatError(null);
+    try {
+      const res = await fetch(`/api/doc-chat?documentId=${row.id}&lang=${lang}`);
+      if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
+      const data = await res.json();
+      setChatThreadId(data.threadId || null);
+      setChatMessages(
+        Array.isArray(data.messages)
+          ? data.messages.filter((m: any) => m?.role && m?.content).map((m: any) => ({ role: m.role, content: m.content }))
+          : []
+      );
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Failed to load chat");
+      setChatForDoc(null);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const sendChat = async () => {
+    if (!chatForDoc || !chatInput.trim()) return;
+    setChatLoading(true);
+    const userMsg = { role: "user" as const, content: chatInput.trim() };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatInput("");
+    setChatError(null);
+    try {
+      const res = await fetch("/api/doc-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId: chatForDoc,
+          threadId: chatThreadId,
+          messages: [userMsg],
+          uiLang: lang,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to chat (${res.status})`);
+      }
+      const data = await res.json();
+      setChatThreadId(data.threadId || chatThreadId);
+      setChatMessages(
+        Array.isArray(data.messages)
+          ? data.messages.filter((m: any) => m?.role && m?.content).map((m: any) => ({ role: m.role, content: m.content }))
+          : []
+      );
+    } catch (err) {
+      console.error(err);
+      setChatError(err instanceof Error ? err.message : "Failed to send message");
+    } finally {
+      setChatLoading(false);
     }
   };
 
@@ -1208,6 +1906,65 @@ const computeDueBadge = (
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to update category");
+    } finally {
+      setBusyRow(null);
+    }
+  };
+
+  const handleCaseChange = async (row: TableRow, newCaseId: string | null) => {
+    setBusyRow(row.id);
+    const previousCaseId = row.case_id;
+    try {
+      const supabase = supabaseBrowser();
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError) throw userError;
+      if (!user) throw new Error("Not logged in.");
+
+      const { error: updateError } = await supabase
+        .from("documents")
+        .update({ case_id: newCaseId })
+        .eq("id", row.id);
+      if (updateError) throw updateError;
+
+      if (previousCaseId && previousCaseId !== newCaseId) {
+        try {
+          await supabase.from("case_documents").delete().eq("case_id", previousCaseId).eq("document_id", row.id);
+        } catch (err) {
+          console.warn("case_documents remove skipped", err);
+        }
+      }
+
+      if (newCaseId) {
+        try {
+          await supabase
+            .from("case_documents")
+            .upsert({ case_id: newCaseId, document_id: row.id }, { onConflict: "case_id,document_id" });
+        } catch (err) {
+          console.warn("case_documents upsert skipped", err);
+        }
+        try {
+          await supabase.from("case_events").insert({
+            case_id: newCaseId,
+            user_id: user.id,
+            kind: "doc_added",
+            payload: { document_id: row.id },
+          });
+        } catch (err) {
+          console.warn("case_event insert skipped", err);
+        }
+      }
+
+      if (previousCaseId && previousCaseId !== newCaseId) {
+        await cleanupEmptyCase(previousCaseId, supabase, user.id);
+      }
+
+      fetchDocs(false);
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Failed to update case");
     } finally {
       setBusyRow(null);
     }
@@ -1384,6 +2141,81 @@ const computeDueBadge = (
                       {t("addTask")}
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+      {isMounted && chatForDoc
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50 p-4"
+              onClick={() => {
+                if (!chatLoading) {
+                  setChatForDoc(null);
+                  setChatThreadId(null);
+                  setChatMessages([]);
+                }
+              }}
+            >
+              <div
+                className="pit-card w-full max-w-2xl max-h-[90vh] flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <p className="pit-title" style={{ fontSize: "18px" }}>
+                    {uiText.title[lang] || uiText.title.en}
+                  </p>
+                  <button
+                    onClick={() => {
+                      if (!chatLoading) {
+                        setChatForDoc(null);
+                        setChatThreadId(null);
+                        setChatMessages([]);
+                      }
+                    }}
+                    className="pit-cta pit-cta--secondary text-xs"
+                  >
+                    {uiText.close[lang] || uiText.close.en}
+                  </button>
+                </div>
+                <div className="flex-1 overflow-y-auto border border-[rgba(0,0,0,0.06)] rounded-md p-3 flex flex-col gap-2">
+                  {chatLoading && chatMessages.length === 0 ? (
+                    <p className="pit-muted text-sm">{uiText.loading[lang] || uiText.loading.en}</p>
+                  ) : chatMessages.length === 0 ? (
+                    <p className="pit-muted text-sm">{uiText.ask[lang] || uiText.ask.en}</p>
+                  ) : (
+                    chatMessages.map((m, idx) => (
+                      <div
+                        key={`${chatForDoc}-msg-${idx}`}
+                        className="text-sm"
+                        style={{ color: m.role === "assistant" ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0.7)" }}
+                      >
+                        <strong style={{ marginRight: 6 }}>{m.role === "assistant" ? "Assistant" : "You"}:</strong>
+                        <span>{m.content}</span>
+                      </div>
+                    ))
+                  )}
+                  {chatError && <p className="pit-error text-xs">{chatError}</p>}
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <textarea
+                    className="pit-input"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder={uiText.placeholder[lang] || uiText.placeholder.en}
+                    rows={2}
+                    style={{ resize: "vertical", minHeight: 60 }}
+                  />
+                  <button
+                    onClick={sendChat}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="pit-cta pit-cta--primary text-xs"
+                    style={{ height: "fit-content" }}
+                  >
+                    {uiText.send[lang] || uiText.send.en}
+                  </button>
                 </div>
               </div>
             </div>,

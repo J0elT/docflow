@@ -31,6 +31,8 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
   const [pendingProcessing, setPendingProcessing] = useState(false);
   const { lang, t } = useLanguage();
 
+  const showSpinner = loading || processing || pendingProcessing;
+
   useEffect(() => {
     if (processing) {
       setPendingProcessing(false);
@@ -408,6 +410,21 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
               ? t("uploadProcessing")
               : t("uploadDrop")}
           </span>
+          {showSpinner && (
+            <span
+              aria-hidden
+              className="upload-spinner"
+              style={{
+                display: "inline-flex",
+                width: 24,
+                height: 24,
+                borderRadius: "999px",
+                border: "2px solid rgba(0,0,0,0.08)",
+                borderTopColor: "rgba(0,0,0,0.35)",
+                animation: "spin 0.9s linear infinite",
+              }}
+            />
+          )}
           <span className="pit-subtitle">{t("uploadHint")}</span>
         </div>
         <input
@@ -433,6 +450,19 @@ export default function UploadForm({ onUploaded, processing = false }: Props) {
           aria-hidden="true"
         />
       </div>
+      <style jsx>{`
+        @keyframes upload-spin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+        .upload-spinner {
+          animation: upload-spin 0.9s linear infinite;
+        }
+      `}</style>
     </form>
   );
 }
