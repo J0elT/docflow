@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import { OpenAI } from "openai";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { validateExtraction, type ExtractionPayload } from "@/lib/extractionSchema";
+import { formatDateYmdMon, formatYearMonthYmdMon } from "@/lib/dateFormat";
+import { extractDeterministicCandidates, formatDeterministicCandidatesForPrompt } from "@/lib/deterministicCandidates";
+import { applyDeterministicConstraints } from "@/lib/deterministicConstraints";
+import { extractDeterministicSignals } from "@/lib/deterministicSignals";
 import { logTelemetryEvent } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
@@ -82,6 +86,8 @@ const sanitizeDomainProfileLabel = (raw: string | null | undefined): string | nu
 const normalizeTitle = (raw: string | null | undefined): string | null => {
   if (!raw || typeof raw !== "string") return null;
   let s = raw.toLowerCase();
+  s = s.replace(/\b\d{4}-[a-z]{3}-\d{2}\b/g, " "); // YYYY-MMM-DD
+  s = s.replace(/\b\d{4}-[a-z]{3}\b/g, " "); // YYYY-MMM
   s = s.replace(/\d{2,4}[./-]\d{1,2}[./-]\d{1,2}/g, " "); // dates
   s = s.replace(/\d+/g, " "); // numbers
   s = s.replace(/\b(bescheid|schreiben|brief|notice|letter|rechnung|invoice|änd(erung|erungsbescheid)|änderung|anhörung|mitteilung|entscheid|decision|update|info)\b/gi, " ");
@@ -89,6 +95,93 @@ const normalizeTitle = (raw: string | null | undefined): string | null => {
   s = s.replace(/\s{2,}/g, " ").trim();
   return s || null;
 };
+
+const normalizeForSearch = (raw: string) =>
+  raw
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const isAppealLikeText = (raw: string | null | undefined) => {
+  if (!raw || typeof raw !== "string") return false;
+  const s = normalizeForSearch(raw);
+  return /\b(widerspruch|einspruch|beschwerde|appeal|objection|contest|challenge)\b/.test(s);
+};
+
+function shouldCreateAppealTask(parsed: ParsedExtraction | null | undefined): boolean {
+  if (!parsed) return false;
+  const risk = normalizeForSearch(typeof (parsed as any)?.risk_level === "string" ? (parsed as any).risk_level : "");
+  if (/\b(high|medium)\b/.test(risk)) return true;
+
+  const parts: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    parts.push(trimmed);
+  };
+
+  push((parsed as any)?.summary);
+  push((parsed as any)?.main_summary);
+
+  const extras = (parsed as any)?.extra_details;
+  if (Array.isArray(extras)) extras.forEach(push);
+
+  const kf = (parsed as any)?.key_fields ?? {};
+  push(kf?.document_kind_fine);
+  push(kf?.topic);
+  push(kf?.follow_up);
+  push(kf?.workflow_status);
+
+  const consequences = (parsed as any)?.consequences_if_ignored;
+  if (Array.isArray(consequences)) {
+    consequences.forEach((c: any) => {
+      push(c?.description);
+      push(c?.severity);
+    });
+  }
+
+  const actions = (parsed as any)?.actions_required;
+  if (Array.isArray(actions)) {
+    actions.forEach((a: any) => {
+      push(a?.label);
+      push(a?.description);
+    });
+  }
+
+  const deadlines = (parsed as any)?.deadlines;
+  if (Array.isArray(deadlines)) {
+    deadlines.forEach((d: any) => {
+      push(d?.kind);
+      push(d?.description);
+      push(d?.relative_text);
+    });
+  }
+
+  const rights = (parsed as any)?.rights_options;
+  if (Array.isArray(rights)) {
+    rights.forEach((r: any) => {
+      push(r?.description);
+    });
+  }
+
+  const deterministicSignals = (parsed as any)?.deterministic_signals;
+  if (deterministicSignals && typeof deterministicSignals === "object") {
+    const blocking = (deterministicSignals as any)?.blocking_periods;
+    if (Array.isArray(blocking)) {
+      blocking.forEach((p: any) => {
+        push(p?.kind);
+        push(p?.start_date);
+        push(p?.end_date);
+        push(p?.source_snippet);
+      });
+    }
+  }
+
+  const text = normalizeForSearch(parts.join("\n"));
+  const negativeSignal = /\b(sperrzeit|sperrfrist|ruhenszeit|ruhezeit|sanktion|sanction|kuerzung|kurzung|reduktion|reduced|reduction|minderung|ablehn|denied|rejected|refused|overpayment|ueberzahlung|uberzahlung|rueckforder|ruckforder|repay|repayment|refund|collection|inkasso|mahnung|vollstreck|pfand|suspend|suspension|entzug|widerruf|revok)\b/;
+  return negativeSignal.test(text);
+}
 
 const tokenize = (raw: string | null | undefined): Set<string> => {
   const s = normalizeTitle(raw);
@@ -161,14 +254,15 @@ type MatchingContext = {
   domainProfileId: string | null;
 };
 
-type ReferenceIds = {
-  steuernummer?: string | null;
-  kundennummer?: string | null;
-  vertragsnummer?: string | null;
-};
+type ReferenceIds = Record<string, string | null>;
 
 type KeyFields = {
   language?: string | null;
+  issuer_short?: string | null;
+  issuer_legal?: string | null;
+  document_date?: string | null;
+  billing_period?: string | null;
+  document_kind_fine?: string | null;
   sender?: string | null;
   topic?: string | null;
   letter_date?: string | null;
@@ -282,6 +376,17 @@ const logLabelCandidates = async (
 function buildFriendlyTitle(parsed: ParsedExtraction | null | undefined): string | null {
   const normalize = (v: string | null | undefined) =>
     typeof v === "string" && v.trim() ? v.trim() : null;
+  const lang = normalize(parsed?.key_fields?.language) as SupportedLang | null;
+  const issuerShort = normalize(parsed?.key_fields?.issuer_short);
+  const docKindFine = normalize(parsed?.key_fields?.document_kind_fine);
+  const billingPeriod = normalize(parsed?.key_fields?.billing_period);
+  const documentDate = normalize(parsed?.key_fields?.document_date) || normalize(parsed?.key_fields?.letter_date);
+
+  const periodLabel = billingPeriod ? (formatYearMonthYmdMon(billingPeriod, lang) ?? "") : "";
+  if (issuerShort && docKindFine && periodLabel) {
+    return `${issuerShort} ${docKindFine} (${periodLabel})`.trim().slice(0, 160);
+  }
+
   const topic =
     normalize(parsed?.key_fields?.topic) ||
     normalize(parsed?.summary) ||
@@ -298,14 +403,13 @@ function buildFriendlyTitle(parsed: ParsedExtraction | null | undefined): string
     return cleaned.replace(/,+\s*$/, "").trim() || null;
   };
 
-  const pickDate = letterDate || dueDate || null;
-  const formatIsoDate = (value: string | null) => {
-    if (!value) return "";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return "";
-    return d.toISOString().slice(0, 10);
-  };
-  const isoDate = formatIsoDate(pickDate);
+  const pickDate = documentDate || letterDate || dueDate || null;
+  const isoDate = pickDate ? (formatDateYmdMon(pickDate, lang) ?? "") : "";
+
+  if (issuerShort && docKindFine) {
+    if (isoDate) return `${issuerShort} ${docKindFine} (${isoDate})`.trim().slice(0, 160);
+    return `${issuerShort} ${docKindFine}`.trim().slice(0, 160);
+  }
 
   const categoryPath = mapToCategoryPath(parsed).path;
   const primaryCategory = categoryPath[0] || "";
@@ -313,7 +417,7 @@ function buildFriendlyTitle(parsed: ParsedExtraction | null | undefined): string
   const parts: string[] = [];
   const cleanTopic = stripAddress(topic);
   const cleanSender = stripAddress(sender);
-  const titleBase = cleanTopic || kind || primaryCategory || "";
+  const titleBase = cleanTopic || docKindFine || kind || primaryCategory || "";
   if (titleBase) parts.push(titleBase);
   if (cleanSender && cleanSender.toLowerCase() !== "unknown") parts.push(cleanSender);
   if (isoDate) parts.push(isoDate);
@@ -324,14 +428,16 @@ function buildFriendlyTitle(parsed: ParsedExtraction | null | undefined): string
   return topic || kind || null;
 }
 
-const slugifyTitle = (value: string) =>
-  value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
+const slugifyTitle = (value: string) => {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{Letter}\p{Number}\-_.]+/gu, "-")
+    .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 120) || "document";
+    .slice(0, 120);
+  return normalized || "document";
+};
 
 function coarseMapSlugToPath(slug?: string | null): string[] {
   if (!slug) return [];
@@ -424,17 +530,46 @@ function normalizeExtraction(
 ): ParsedExtraction {
   if (!parsed) return { summary: null, main_summary: null, extra_details: [], key_fields: { language: preferredLanguage } };
   const result = { ...parsed };
-  result.main_summary =
-    (typeof result.main_summary === "string" && result.main_summary.trim()) ||
-    (typeof result.summary === "string" && result.summary.trim()) ||
-    null;
-  result.summary = result.main_summary || result.summary || null;
+  const summary =
+    typeof result.summary === "string" && result.summary.trim() ? result.summary.trim() : "";
+  const mainSummary =
+    typeof result.main_summary === "string" && result.main_summary.trim()
+      ? result.main_summary.trim()
+      : "";
+  // Preserve semantics:
+  // - `summary` is the short gist shown on cards
+  // - `main_summary` is an optional longer meaning-only explanation
+  // Backfill whichever is missing for older extractions.
+  result.summary = summary || mainSummary || null;
+  result.main_summary = mainSummary || summary || null;
   result.extra_details = Array.isArray(result.extra_details)
     ? result.extra_details.filter((s: any) => typeof s === "string" && s.trim().length > 0)
     : [];
   result.key_fields = result.key_fields || {};
   if (!result.key_fields.language) {
     result.key_fields.language = preferredLanguage;
+  }
+  if (!result.key_fields.document_date && typeof result.key_fields.letter_date === "string" && result.key_fields.letter_date.trim()) {
+    result.key_fields.document_date = result.key_fields.letter_date.trim();
+  }
+  if (!result.key_fields.letter_date && typeof result.key_fields.document_date === "string" && result.key_fields.document_date.trim()) {
+    result.key_fields.letter_date = result.key_fields.document_date.trim();
+  }
+  if (typeof result.key_fields.billing_period === "string") {
+    const trimmed = result.key_fields.billing_period.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      result.key_fields.billing_period = trimmed.slice(0, 7);
+    } else {
+      result.key_fields.billing_period = trimmed || null;
+    }
+  }
+  if (!result.key_fields.issuer_short) {
+    const sender = typeof result.key_fields.sender === "string" ? result.key_fields.sender : null;
+    const match = sender?.match(/\(([^)]+)\)/);
+    const candidate = match?.[1]?.trim();
+    if (candidate && candidate.includes(".")) {
+      result.key_fields.issuer_short = candidate;
+    }
   }
   if (Array.isArray(result.key_fields.category_path)) {
     result.key_fields.category_path = normalizeCategoryPath(result.key_fields.category_path);
@@ -446,6 +581,100 @@ function normalizeExtraction(
   if (usedPdfOcrFallback && !result.badge_text) {
     result.badge_text = "Scanned letter (please double-check numbers)";
   }
+
+  // Guardrail: appeal/objection is usually informational, not a task.
+  // Only keep appeal-like tasks/actions when there is a meaningful negative impact.
+  const allowAppealTask = shouldCreateAppealTask(result);
+  if (!allowAppealTask) {
+    const suggestionTitle =
+      typeof result.task_suggestion?.title === "string" ? result.task_suggestion.title.trim() : "";
+    if (suggestionTitle && isAppealLikeText(suggestionTitle)) {
+      result.task_suggestion = {
+        ...(result.task_suggestion || {}),
+        should_create_task: false,
+        title: null,
+        description: null,
+        due_date: null,
+        urgency: null,
+      };
+    }
+
+    const actions = Array.isArray((result as any)?.actions_required) ? (((result as any).actions_required as any[]) ?? []) : [];
+    if (actions.length) {
+      (result as any).actions_required = actions.filter(
+        (a: any) => !isAppealLikeText(a?.label) && !isAppealLikeText(a?.description)
+      );
+    }
+
+    const actionDesc =
+      typeof (result as any)?.key_fields?.action_description === "string"
+        ? String((result as any).key_fields.action_description).trim()
+        : "";
+    if (actionDesc && isAppealLikeText(actionDesc)) {
+      (result as any).key_fields = (result as any).key_fields || {};
+      (result as any).key_fields.action_description = null;
+    }
+
+    if ((result as any)?.key_fields?.action_required === true) {
+      const hasActionDesc =
+        typeof (result as any)?.key_fields?.action_description === "string" &&
+        String((result as any).key_fields.action_description).trim().length > 0;
+      const hasActions =
+        Array.isArray((result as any)?.actions_required) && ((result as any).actions_required as any[]).length > 0;
+      const shouldCreate = (result as any)?.task_suggestion?.should_create_task === true;
+      if (!hasActionDesc && !hasActions && !shouldCreate) {
+        (result as any).key_fields = (result as any).key_fields || {};
+        (result as any).key_fields.action_required = false;
+      }
+    }
+
+    // If due_date is actually an appeal-by date, don't treat it as the main "action needed by" date.
+    const due =
+      typeof (result as any)?.key_fields?.due_date === "string"
+        ? String((result as any).key_fields.due_date).trim()
+        : "";
+    if (due && (result as any)?.key_fields?.action_required !== true) {
+      const deadlines = Array.isArray((result as any)?.deadlines) ? (((result as any).deadlines as any[]) ?? []) : [];
+      const appealDates = deadlines
+        .filter((d: any) => String(d?.kind || "").toLowerCase().includes("appeal"))
+        .map((d: any) => (typeof d?.date_exact === "string" ? d.date_exact.trim() : ""))
+        .filter(Boolean);
+      if (appealDates.includes(due)) {
+        (result as any).key_fields = (result as any).key_fields || {};
+        (result as any).key_fields.due_date = null;
+      }
+    }
+  }
+
+  // Deduplicate near-identical extra_details (same fact repeated under different labels).
+  if (Array.isArray(result.extra_details) && result.extra_details.length > 1) {
+    const normalizeText = (txt: string) =>
+      txt
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/[^\p{L}\p{N}\s:.-]/gu, "")
+        .trim();
+    const buildKeys = (entry: string) => {
+      const full = normalizeText(entry);
+      const afterColonRaw = entry.includes(":") ? entry.split(":").slice(1).join(":") : entry;
+      const afterColon = normalizeText(afterColonRaw);
+      const valuePartRaw = afterColonRaw.split(/[-–—]/)[0] || afterColonRaw;
+      const valuePart = normalizeText(valuePartRaw);
+      return [full, afterColon, valuePart].filter(Boolean);
+    };
+    const seen = new Set<string>();
+    result.extra_details = result.extra_details.filter((entry: string) => {
+      if (typeof entry !== "string") return false;
+      const keys = buildKeys(entry);
+      const hasDuplicate = keys.some((k) => seen.has(k));
+      if (hasDuplicate) return false;
+      keys.forEach((k) => seen.add(k));
+      return true;
+    });
+  }
+
   return result;
 }
 
@@ -684,14 +913,22 @@ const buildExtractionPrompt = (preferredLanguage: SupportedLang) =>
     `You extract structured info from documents and respond in ${preferredLanguage}.`,
     "Return ONLY JSON with this shape:",
     "{",
-    '  "summary": "Short human-readable summary (<=220 chars)",',
-    '  "main_summary": "Repeat summary or null",',
-    '  "badge_text": "Short chip about deadline/type or null",',
-    '  "extra_details": ["bullet 1","bullet 2"... up to 5, only if new info],',
+    '  "summary": "Meaning-only gist for the card (1–2 short sentences, <=220 chars, no ellipses/trailing fragments). Do not mention tasks/deadlines or repeat the no-action status here.",',
+	    '  "main_summary": "Optional longer meaning-only explanation (<=420 chars, complete sentences, no ellipses) or null",',
+	    '  "badge_text": "Short chip about deadline/type or null",',
+	    '  "extra_details": ["Total: 23.94 EUR - This is the total amount on this invoice.", "Direct debit: 2025-11-11 - The amount will be taken from your bank account on this date."],',
     '  "document_kind": "letter | invoice | contract | notice | info | other",',
     '  "jurisdiction": { "country_code": "DE|FR|RO|TR|ES|PT|RU|PL|UA|GB|... or null", "region": "state/Land/province or null", "evidence": "short reason (sender, statute, address)" },',
     '  "key_fields": {',
     `    "language": "${preferredLanguage}",`,
+    '    "issuer_short": "Short sender label for UI (brand/domain), e.g. SIM.de, AOK, Deutsche Bank, or null",',
+    '    "issuer_legal": "Full legal sender name (e.g. Drillisch Online GmbH) or null",',
+    '    "document_date": "YYYY-MM-DD or null (date printed on the document; for letters this is the letter/issue date). Prefer this over guessing.",',
+    '    "billing_period": "YYYY-MM or null (ONLY if the document explicitly states a single month/year it covers, e.g. monthly phone/internet/utility bill or statement; if the period is a date range, spans multiple months, or is unclear, return null)",',
+    '    "document_kind_fine": "Specific type label in the output language (e.g. Mobilfunkrechnung, Kontoauszug) or null",',
+    '    "contact_person": "Sender contact person/caseworker/department or null (NEVER the recipient name)",',
+    '    "contact_phone": "Sender phone number (service line) or null",',
+    '    "contact_email": "Sender email (service address) or null",',
     '    "sender": "...",',
     '    "topic": "...",',
     '    "letter_date": "YYYY-MM-DD or null",',
@@ -701,7 +938,7 @@ const buildExtractionPrompt = (preferredLanguage: SupportedLang) =>
     '    "action_required": true/false,',
     '    "action_description": "Plain action <=120 chars or null",',
     '    "follow_up": "Short note if another letter will come, else null",',
-    '    "reference_ids": { "steuernummer": null, "kundennummer": null, "vertragsnummer": null },',
+    '    "reference_ids": { "invoice_number": null, "customer_number": null, "contract_number": null, "case_number": null, "tax_number": null, "aktenzeichen": null, "kundennummer": null, "vorgangsnummer": null, "iban": null, "bic": null, "mandate_reference": null },',
     '    "category_path": ["Finanzen"] or null,',
     '    "parties": [ { "role": "sender|recipient|other", "name": "...", "type": "person|organisation|government_body|other", "label": "me|..." } ],',
     '    "sender_type_label": "...",',
@@ -714,6 +951,7 @@ const buildExtractionPrompt = (preferredLanguage: SupportedLang) =>
     '  "deadlines": [ { "id": "d1", "date_exact": "YYYY-MM-DD or null", "relative_text": null, "kind": "payment|appeal|provide_documents|appointment|sign_and_return|other", "description": "...", "is_hard_deadline": true/false, "source_snippet": "...", "confidence": 0.0-1.0 } ],',
     '  "amounts": [ { "value": 123.45, "currency": "EUR", "direction": "you_pay|you_receive|neutral_or_unknown", "frequency": "one_off|monthly|yearly|other|unknown", "description": "...", "source_snippet": "...", "confidence": 0.0-1.0 } ],',
     '  "actions_required": [ { "id": "a1", "label": "short", "description": "longer", "due_date": "YYYY-MM-DD or null", "severity": "high|medium|low", "is_blocking": true/false, "source_snippet": "...", "confidence": 0.0-1.0 } ],',
+    '  "required_documents": [ { "id": "rd1", "description": "What to provide", "where_how": "Where/how to submit (address/portal/email) or null", "related_deadline_ids": ["d1"], "source_snippet": "...", "confidence": 0.0-1.0 } ],',
     '  "rights_options": [ { "id": "r1", "description": "...", "related_deadline_ids": ["d1"], "source_snippet": "...", "confidence": 0.0-1.0 } ],',
     '  "consequences_if_ignored": [ { "description": "...", "severity": "high|medium|low", "source_snippet": "...", "confidence": 0.0-1.0 } ],',
     '  "risk_level": "none|low|medium|high",',
@@ -741,11 +979,31 @@ const buildExtractionPrompt = (preferredLanguage: SupportedLang) =>
     "- For subchild, use a specific variant if obvious (e.g., Employment Contracts > Termination/Severance; Public Benefits (general) > Unemployment; Loans & Credit > Collections/Enforcement).",
     "- Always include domain_profile_label for the most specific Level 3 (e.g., heating_backpayment_bill, monthly_rent_invoice, service_charge_annual_statement, termination_severance); keep it short and generic.",
     "- Avoid user-specific names; prefer <=3 segments.",
-    "- extra_details must not repeat summary; keep 3-5 most important bullets (dates, amounts, obligations, signatures, follow-ups).",
-    "- Include source_snippet and confidence where applicable; do not invent dates/amounts.",
-    "- If no action is required, set action_required=false and task_suggestion.should_create_task=false.",
-    "- If the letter says to wait for another letter, set follow_up and keep action_required=false.",
-  ].join("\n");
+    "- Summary: explain meaning only (what this is + what happens/changed). Do NOT include to-do instructions, deadlines, 'action needed by' phrasing, or 'no action required' language (that belongs to action_required/tasks).",
+    "- Language: Write ALL generated text fields in the output language (summary/main_summary/badge_text/extra_details labels+explanations/action_description/follow_up). Translate from the source letter. Only keep short official terms (program names, legal labels, <=4 words) in the source language when needed; do not copy full sentences in the source language.",
+    "- Writing style: use short, complete sentences; avoid semicolons and trailing ellipses ('...'/'…'); explain what each amount/date refers to (not just the number).",
+    "- Date format: whenever you mention a date in ANY generated text field (summary/main_summary/badge_text/extra_details explanations/action_description/follow_up), write it as ISO YYYY-MM-DD (and date ranges as 'YYYY-MM-DD to YYYY-MM-DD'). Do not use locale formats like 01.11.2025 or '6 Nov 2025'.",
+    "- Contacts (contact_person/contact_phone/contact_email): Only extract the sender's contact person/caseworker/department and service phone/email when explicitly labeled (e.g. Ansprechpartner, Kontakt). NEVER use the recipient/user name from the address block. If unclear, return null.",
+    "- Placeholders: NEVER use filler strings like 'neutral', 'unknown', 'n/a', 'k.A.', or 'null'. If a field is unknown, return null and omit it from extra_details.",
+    "- Emails/screenshots: Use sender name/role/company/location from the body or signature; avoid treating signature data as neutral. If a subject is present, reflect it in the title/summary (e.g., subject + sender).",
+    "- Emails: Always state what the email is about (subject/topic) in the summary and title (e.g., 'Statusupdate zur Aufhebungsvereinbarung', 'Freigabe-Status Kündigung'). Avoid generic 'E-Mail' titles.",
+    "- No duplicates: Do NOT repeat the same fact under multiple labels (e.g., the same 90-day window twice). Keep one canonical phrasing per fact and drop near-duplicates in extra_details and summary.",
+    "- extra_details: Provide 4–6 user-relevant Key facts max in short 'Label: value - what it means' form. The `value` must be type-correct and atomic: a money amount with currency (e.g. '1,580.10 EUR'), an ISO date ('YYYY-MM-DD'), or a period ('YYYY-MM' or 'YYYY-MM-DD to YYYY-MM-DD'). Do NOT put a date as the value for an amount label; keep the amount as the value and put the date in the explanation. Avoid duplicates: do not repeat the same fact/amount/date with different labels. Avoid low-value details like shipping cost 0, VAT rates, product/model codes, or generic appeal boilerplate (keep only an actual appeal-by date). Do NOT include IDs, account numbers, IBAN/BIC, mandate refs, tax numbers, birthdates, or other personal/admin identifiers.",
+	    "- extra_details: The explanation after `-` must be ONE simple full sentence in the output language (no fragments, no slashes like ' / ', no trailing '...').",
+	    "- extra_details: Do NOT add 'Document date' / 'Dokumentdatum' as a key fact (it's already in the title); only include it if it is directly relevant (e.g. needed to understand a deadline).",
+	    "- extra_details: If the label implies a time period (Zeitraum/period/coverage/Sperrzeit/Ruhezeit), the `value` must be a period (YYYY-MM or YYYY-MM-DD to YYYY-MM-DD), not just a single start date.",
+	    "- reference_ids: put Aktenzeichen/Kundennummer/Vorgangsnummer, invoice/customer/contract/case numbers, IBAN/BIC, and mandate references here when present; do not invent.",
+	    "- required_documents: if the letter asks you to provide documents/forms, list each required document and where/how to submit it; tie to deadlines via related_deadline_ids when possible.",
+	    "- Include source_snippet and confidence where applicable; do not invent dates/amounts.",
+	    "- Tasks: Only suggest tasks when a user action is required. If the document is informational, a confirmation (already paid/received), or a recurring automatic payment/collection with no user choice/deadline, set action_required=false, actions_required=[], and task_suggestion.should_create_task=false.",
+	    "- Tasks: Do NOT create tasks just because an appeal/objection is possible. Treat appeal rights (Widerspruch/Einspruch/appeal/objection) as information: include the appeal window in deadlines[] (kind='appeal'), but keep action_required=false.",
+	    "- Tasks: You MAY suggest an appeal task only when the decision has a negative impact (e.g. Sperrzeit/sanction/reduction/denial/repayment) AND the user could reasonably want to challenge it. Phrase it as an optional check (e.g. 'Prüfen, ob Widerspruch sinnvoll ist').",
+	    "- Tasks: When action_required=true, populate actions_required with 1–5 verb-first actions. Each action.label should start with a verb and be short; action.description should include a 1-line reason/consequence and (if relevant) amount + counterparty.",
+	    "- If no action is required, set action_required=false and task_suggestion.should_create_task=false.",
+	    "- If the letter says to wait for another letter / a separate decision will follow, set follow_up, keep action_required=false, and include that as a key fact in extra_details.",
+	    "- deadlines: If a deadline is only given relatively (e.g. 'within one month after Bekanntgabe'), set date_exact=null and put that phrase into relative_text. Do not drop it just because it has no exact date.",
+	    "- amount_total: Use ONLY for a one-off total due/owed/paid (e.g. an invoice total). For recurring rates (monthly benefit/payout, subscription price, daily rate), leave amount_total=null and represent the rate via `amounts[]` (with frequency) + `extra_details`.",
+	  ].join("\n");
 
 async function seedDefaultCategoriesIfMissing(
   supabase: ReturnType<typeof supabaseAdmin>,
@@ -1060,70 +1318,170 @@ async function ensureTasksFromExtraction(
   documentId: string,
   parsed: ParsedExtraction | null | undefined
 ) {
-  const suggestion = parsed?.task_suggestion;
+  const allowAppealTask = shouldCreateAppealTask(parsed);
+  const shouldSkipTaskTitle = (title: string | null | undefined) =>
+    !allowAppealTask && typeof title === "string" && title.trim().length > 0 && isAppealLikeText(title);
+
+  const normalize = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const normalizeUrgency = (value: string | null | undefined): "low" | "normal" | "high" => {
     if (value === "low" || value === "normal" || value === "high") return value;
     return "normal";
   };
+  const normalizeTitleKey = (title: string) => title.toLowerCase().replace(/\s+/g, " ").trim();
+  const parseIsoDate = (value: unknown) => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+    const d = new Date(trimmed);
+    if (Number.isNaN(d.getTime())) return null;
+    return trimmed;
+  };
+  const formatMoney = (amount: number, currency: string | null) => {
+    const rounded = Number.isFinite(amount) ? amount : NaN;
+    if (!Number.isFinite(rounded)) return null;
+    const fixed = Math.abs(rounded) >= 1000 ? rounded.toFixed(0) : rounded.toFixed(2);
+    if (currency === "EUR") return `€${fixed}`;
+    if (currency === "USD") return `$${fixed}`;
+    if (currency === "GBP") return `£${fixed}`;
+    return currency ? `${fixed} ${currency}` : fixed;
+  };
 
-  const suggestionTitle =
-    typeof suggestion?.title === "string" && suggestion.title.trim()
-      ? suggestion.title.trim()
-      : null;
-  const suggestionDue =
-    typeof suggestion?.due_date === "string" && suggestion.due_date.trim()
-      ? suggestion.due_date.trim()
-      : null;
-  const suggestionDescription =
-    typeof suggestion?.description === "string" && suggestion.description.trim()
-      ? suggestion.description.trim()
-      : null;
+  const consequence = (() => {
+    const items = Array.isArray((parsed as any)?.consequences_if_ignored)
+      ? (((parsed as any)?.consequences_if_ignored as any[]) ?? [])
+      : [];
+    const scored = items
+      .map((c) => ({
+        severity: normalize(c?.severity),
+        description: normalize(c?.description),
+        confidence: typeof c?.confidence === "number" ? c.confidence : null,
+      }))
+      .filter((c) => c.description);
+    if (!scored.length) return null;
+    const severityRank = (s: string | null) => (s === "high" ? 0 : s === "medium" ? 1 : s === "low" ? 2 : 3);
+    scored.sort((a, b) => {
+      const sev = severityRank(a.severity) - severityRank(b.severity);
+      if (sev !== 0) return sev;
+      const ca = a.confidence ?? 0;
+      const cb = b.confidence ?? 0;
+      return cb - ca;
+    });
+    return scored[0]?.description ?? null;
+  })();
+
+  const issuer =
+    normalize(parsed?.key_fields?.issuer_short) ||
+    normalize(parsed?.key_fields?.sender) ||
+    null;
+  const currency = normalize(parsed?.key_fields?.currency);
+  const amount = extractPrimaryAmount(parsed);
+  const money = amount !== null ? formatMoney(amount, currency) : null;
+
+  const contextBits = [money, issuer].filter((v): v is string => !!v);
+  const contextLine = contextBits.length ? `Context: ${contextBits.join(" · ")}` : null;
+  const reasonLine = consequence ? `Reason: ${consequence}` : null;
+
+  const candidates: { title: string; description: string | null; due_date: string | null; urgency: "low" | "normal" | "high" }[] = [];
+  const seenKeys = new Set<string>();
+  const pushCandidate = (candidate: {
+    title: string;
+    description: string | null;
+    due_date: string | null;
+    urgency: "low" | "normal" | "high";
+  }) => {
+    const key = normalizeTitleKey(candidate.title);
+    if (!key) return;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    candidates.push(candidate);
+  };
+
+  const actions = Array.isArray((parsed as any)?.actions_required)
+    ? (((parsed as any)?.actions_required as any[]) ?? [])
+    : [];
+  for (const action of actions) {
+    const title = normalize(action?.label) || normalize(action?.description);
+    if (!title) continue;
+    if (shouldSkipTaskTitle(title)) continue;
+    const due = parseIsoDate(action?.due_date);
+    const severity = normalize(action?.severity)?.toLowerCase() ?? null;
+    const urgency: "low" | "normal" | "high" =
+      severity === "high" ? "high" : severity === "medium" ? "normal" : severity === "low" ? "low" : "normal";
+    const baseDescription = normalize(action?.description);
+    const descParts: string[] = [];
+    if (baseDescription && baseDescription !== title) descParts.push(baseDescription);
+    if (contextLine) descParts.push(contextLine);
+    if (reasonLine) descParts.push(reasonLine);
+    pushCandidate({
+      title,
+      description: descParts.length ? descParts.join("\n") : null,
+      due_date: due,
+      urgency,
+    });
+  }
+
+  const suggestion = parsed?.task_suggestion as any;
+  const suggestionTitle = normalize(suggestion?.title);
+  const suggestionDue = parseIsoDate(suggestion?.due_date);
+  const suggestionDescription = normalize(suggestion?.description);
   const shouldCreate = suggestion?.should_create_task === true;
+  if (candidates.length === 0 && shouldCreate && suggestionTitle && !shouldSkipTaskTitle(suggestionTitle)) {
+    const descParts: string[] = [];
+    if (suggestionDescription) descParts.push(suggestionDescription);
+    if (contextLine) descParts.push(contextLine);
+    if (reasonLine) descParts.push(reasonLine);
+    pushCandidate({
+      title: suggestionTitle,
+      description: descParts.length ? descParts.join("\n") : null,
+      due_date: suggestionDue,
+      urgency: normalizeUrgency(normalize(suggestion?.urgency)),
+    });
+  }
+
+  const actionRequired = parsed?.key_fields?.action_required === true;
+  const actionDesc = normalize(parsed?.key_fields?.action_description);
+  const actionDue = parseIsoDate(parsed?.key_fields?.due_date) || suggestionDue;
+  if (candidates.length === 0 && actionRequired && actionDesc && !shouldSkipTaskTitle(actionDesc)) {
+    const descParts: string[] = [];
+    if (contextLine) descParts.push(contextLine);
+    if (reasonLine) descParts.push(reasonLine);
+    pushCandidate({
+      title: actionDesc,
+      description: descParts.length ? descParts.join("\n") : null,
+      due_date: actionDue,
+      urgency: actionDue ? "normal" : "low",
+    });
+  }
+
+  if (!candidates.length) return;
 
   const { data: existing, error } = await supabase
     .from("tasks")
-    .select("id, status")
+    .select("id, title")
     .eq("document_id", documentId)
     .eq("user_id", userId);
   if (error) throw error;
-  const hasOpenTask = (existing ?? []).some((t: any) => t?.status !== "done");
+  const existingKeys = new Set(
+    (existing ?? [])
+      .map((t: any) => (typeof t?.title === "string" ? normalizeTitleKey(t.title) : ""))
+      .filter(Boolean)
+  );
 
-  if (shouldCreate && suggestionTitle) {
-    if (hasOpenTask) return;
-    await supabase.from("tasks").insert({
+  const inserts = candidates
+    .filter((c) => !existingKeys.has(normalizeTitleKey(c.title)))
+    .slice(0, 6)
+    .map((c) => ({
       user_id: userId,
       document_id: documentId,
-      title: suggestionTitle,
-      description: suggestionDescription,
-      due_date: suggestionDue,
-      urgency: normalizeUrgency(suggestion?.urgency || null),
+      title: c.title,
+      description: c.description,
+      due_date: c.due_date,
+      urgency: c.urgency,
       status: "open",
-    });
-    return;
-  }
+    }));
 
-  // Fallback: if no suggestion but the extraction clearly indicates an action, derive a single task
-  const actionRequired = parsed?.key_fields?.action_required === true;
-  const actionDesc =
-    typeof parsed?.key_fields?.action_description === "string" &&
-    parsed.key_fields.action_description?.trim()
-      ? parsed.key_fields.action_description.trim()
-      : null;
-  const actionDue =
-    typeof parsed?.key_fields?.due_date === "string" && parsed.key_fields.due_date?.trim()
-      ? parsed.key_fields.due_date.trim()
-      : suggestionDue;
-
-  if (!hasOpenTask && actionRequired && actionDesc) {
-    await supabase.from("tasks").insert({
-      user_id: userId,
-      document_id: documentId,
-      title: actionDesc,
-      due_date: actionDue,
-      urgency: actionDue ? "normal" : "low",
-      status: "open",
-    });
-  }
+  if (!inserts.length) return;
+  await supabase.from("tasks").insert(inserts);
 }
 
 export async function POST(request: Request) {
@@ -1200,36 +1558,149 @@ export async function POST(request: Request) {
       throw new Error("Missing OPENAI_API_KEY");
     }
     const openai = new OpenAI({ apiKey: openaiKey });
+    const PROCESS_MODEL = process.env.DOCFLOW_PROCESS_MODEL || "gpt-5.2";
+    const PROCESS_TEXT_MODEL = process.env.DOCFLOW_PROCESS_TEXT_MODEL || PROCESS_MODEL;
+    const PROCESS_TEXT_FALLBACK_MODEL = process.env.DOCFLOW_PROCESS_TEXT_FALLBACK_MODEL || "gpt-4o-mini";
+    // Default vision/OCR to a vision-capable model to avoid text-only failures on image_url payloads.
+    const PROCESS_VISION_MODEL = process.env.DOCFLOW_PROCESS_VISION_MODEL || "gpt-4o";
+    const PROCESS_VISION_FALLBACK_MODEL = process.env.DOCFLOW_PROCESS_VISION_FALLBACK_MODEL || "gpt-4o-mini";
 
     const callTextModel = async (content: string, preferredLanguage: SupportedLang) => {
-    if (!content || content.trim().length === 0) {
-      throw new Error(
-        "No text extracted from document (possibly scanned or image-only PDF)."
-      );
-    }
-    const truncated = content.slice(0, 8000);
-    const prompt = [buildExtractionPrompt(preferredLanguage), "Document text:", truncated].join(
-      "\n"
-    );
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }],
-        },
-      ],
-    });
-      const contentResult = completion.choices[0]?.message?.content;
-      if (!contentResult) throw new Error("Missing content from OpenAI response");
-      const parsedJson = JSON.parse(contentResult);
-      const validated = validateAndNormalize(parsedJson, "text-model", preferredLanguage, usedPdfOcrFallback);
-      if (!validated.summary) {
-        validated.summary = "Info only";
-        validated.main_summary = validated.summary;
+      if (!content || content.trim().length === 0) {
+        throw new Error(
+          "No text extracted from document (possibly scanned or image-only PDF)."
+        );
       }
-      return validated;
+      const candidates = extractDeterministicCandidates(content, { maxPerType: 18 });
+      const candidatesJson = formatDeterministicCandidatesForPrompt(candidates);
+      const truncated = content.slice(0, 8000);
+      const prompt = [
+        buildExtractionPrompt(preferredLanguage),
+        "",
+        "Deterministic candidates (regex/rules) extracted from the document text.",
+        "For these fields, you MUST copy an exact candidate value or return null (never invent):",
+        "- key_fields.document_date, key_fields.letter_date, key_fields.due_date",
+        "- key_fields.amount_total/currency, amounts[].value/currency",
+        "- key_fields.reference_ids.* (including Aktenzeichen/Kundennummer/Vorgangsnummer, IBAN/BIC)",
+        "- key_fields.contact_email, key_fields.contact_phone",
+        "Candidates (JSON):",
+        candidatesJson,
+        "",
+        "Document text:",
+        truncated,
+      ].join("\n");
+      const run = async (model: string) => {
+        const completion = await openai.chat.completions.create({
+          model,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: prompt }],
+            },
+          ],
+        });
+        const contentResult = completion.choices[0]?.message?.content;
+        if (!contentResult) throw new Error("Missing content from OpenAI response");
+        const parsedJson = JSON.parse(contentResult);
+        const validated = validateAndNormalize(parsedJson, "text-model", preferredLanguage, usedPdfOcrFallback);
+        const constrained = applyDeterministicConstraints(validated, candidates);
+        const signals = extractDeterministicSignals(content, { maxPerType: 4 });
+        (constrained as any).deterministic_candidates = candidates;
+        (constrained as any).deterministic_signals = signals;
+        const blocking = signals.blocking_periods.find((s) => s.start_date && s.end_date) ?? signals.blocking_periods[0];
+        if (blocking?.start_date && blocking?.end_date) {
+          constrained.extra_details = Array.isArray(constrained.extra_details) ? constrained.extra_details : [];
+          const label =
+            blocking.kind === "sperrfrist"
+              ? "Sperrfrist"
+              : blocking.kind === "ruhenszeit"
+                ? "Ruhenszeit"
+                : blocking.kind === "ruhezeit"
+                  ? "Ruhezeit"
+                  : "Sperrzeit";
+          const detail = `${label}: ${blocking.start_date} to ${blocking.end_date}`;
+          if (!constrained.extra_details.some((s) => typeof s === "string" && s.includes(detail))) {
+            constrained.extra_details.unshift(detail);
+          }
+        }
+
+        // Deterministic safety net: blocking periods should trigger an appeal-check task,
+        // even if the model misses them (still subject to downstream dedupe).
+        if (blocking?.start_date) {
+          const actions = Array.isArray((constrained as any).actions_required)
+            ? (((constrained as any).actions_required as any[]) ?? [])
+            : [];
+          const hasAppealTaskAlready = actions.some(
+            (a) => isAppealLikeText(a?.label) || isAppealLikeText(a?.description)
+          );
+          if (!hasAppealTaskAlready) {
+            const appealKeywords = /\b(widerspruch|einspruch|appeal|objection)\b/i;
+            const deadlines = Array.isArray((constrained as any).deadlines) ? (((constrained as any).deadlines as any[]) ?? []) : [];
+            let appealDueExact: string | null = null;
+            let appealDueRelative: string | null = null;
+            for (const d of deadlines) {
+              const kind = typeof d?.kind === "string" ? d.kind : "";
+              const desc = typeof d?.description === "string" ? d.description : "";
+              const rel = typeof d?.relative_text === "string" ? d.relative_text : "";
+              const joined = `${kind} ${desc} ${rel}`.trim();
+              if (!appealKeywords.test(joined)) continue;
+              if (!appealDueExact && typeof d?.date_exact === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d.date_exact)) {
+                appealDueExact = d.date_exact;
+              }
+              if (!appealDueRelative && rel.trim()) {
+                appealDueRelative = rel.trim();
+              }
+            }
+
+            const labelText = preferredLanguage === "de" ? "Widerspruch prüfen" : "Check appeal";
+            const blockingLabel =
+              blocking.kind === "sperrfrist"
+                ? "Sperrfrist"
+                : blocking.kind === "ruhenszeit"
+                  ? "Ruhenszeit"
+                  : blocking.kind === "ruhezeit"
+                    ? "Ruhezeit"
+                    : "Sperrzeit";
+            const rangeText = blocking.end_date ? `${blocking.start_date} to ${blocking.end_date}` : blocking.start_date;
+            const descriptionParts: string[] = [];
+            if (preferredLanguage === "de") {
+              descriptionParts.push(`Im Schreiben wird eine ${blockingLabel} genannt (${rangeText}).`);
+              if (appealDueRelative) descriptionParts.push(`Frist: ${appealDueRelative}`);
+            } else {
+              descriptionParts.push(`The document mentions a ${blockingLabel} (${rangeText}).`);
+              if (appealDueRelative) descriptionParts.push(`Deadline: ${appealDueRelative}`);
+            }
+
+            actions.unshift({
+              label: labelText,
+              description: descriptionParts.length ? descriptionParts.join("\n") : null,
+              due_date: appealDueExact,
+              severity: "high",
+              is_blocking: true,
+              source_snippet: blocking.source_snippet,
+              confidence: blocking.confidence,
+            });
+            (constrained as any).actions_required = actions;
+          }
+        }
+        if (!validated.summary) {
+          constrained.summary = "Info only";
+          constrained.main_summary = constrained.summary;
+        }
+        return constrained;
+      };
+
+      try {
+        return await run(PROCESS_TEXT_MODEL);
+      } catch (err) {
+        if (PROCESS_TEXT_MODEL === PROCESS_TEXT_FALLBACK_MODEL) throw err;
+        console.warn(
+          `text model ${PROCESS_TEXT_MODEL} failed; falling back to ${PROCESS_TEXT_FALLBACK_MODEL}`,
+          err
+        );
+        return run(PROCESS_TEXT_FALLBACK_MODEL);
+      }
     };
 
     const renderPdfImages = async (pdfBuffer: Buffer) => {
@@ -1385,25 +1856,32 @@ export async function POST(request: Request) {
         `Perform OCR on the provided images, then extract using the schema. Respond in ${preferredLanguage}.`,
         buildExtractionPrompt(preferredLanguage),
       ].join("\n\n");
-      const completion = await openai.chat.completions.create({
-        // Use a vision-capable model for OCR + reasoning on scanned docs/images.
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: prompt,
-              },
-              ...images.map((img) => ({
-                type: "image_url" as const,
-                image_url: { url: img },
-              })),
-            ],
-          },
-        ],
+      const run = (model: string) =>
+        openai.chat.completions.create({
+          // Use a vision-capable model for OCR + reasoning on scanned docs/images.
+          model,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: prompt,
+                },
+                ...images.map((img) => ({
+                  type: "image_url" as const,
+                  image_url: { url: img },
+                })),
+              ],
+            },
+          ],
+        });
+
+      const completion = await run(PROCESS_VISION_MODEL).catch(async (err) => {
+        if (PROCESS_VISION_MODEL === PROCESS_VISION_FALLBACK_MODEL) throw err;
+        console.warn(`vision model ${PROCESS_VISION_MODEL} failed; falling back to ${PROCESS_VISION_FALLBACK_MODEL}`, err);
+        return run(PROCESS_VISION_FALLBACK_MODEL);
       });
       const contentResult = completion.choices[0]?.message?.content;
       if (!contentResult) throw new Error("Missing content from OpenAI response");
@@ -1420,23 +1898,29 @@ export async function POST(request: Request) {
       if (!images.length) return "";
       // Limit pages to avoid huge payloads
       const limited = images.slice(0, 4);
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Read all text from these scanned pages and return ONLY the plain text (no translation, no summary).",
-              },
-              ...limited.map((img) => ({
-                type: "image_url" as const,
-                image_url: { url: img },
-              })),
-            ],
-          },
-        ],
+      const run = (model: string) =>
+        openai.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: "Read all text from these scanned pages and return ONLY the plain text (no translation, no summary).",
+                },
+                ...limited.map((img) => ({
+                  type: "image_url" as const,
+                  image_url: { url: img },
+                })),
+              ],
+            },
+          ],
+        });
+      const completion = await run(PROCESS_VISION_MODEL).catch(async (err) => {
+        if (PROCESS_VISION_MODEL === PROCESS_VISION_FALLBACK_MODEL) throw err;
+        console.warn(`OCR model ${PROCESS_VISION_MODEL} failed; falling back to ${PROCESS_VISION_FALLBACK_MODEL}`, err);
+        return run(PROCESS_VISION_FALLBACK_MODEL);
       });
       const contentResult = completion.choices[0]?.message?.content;
       if (!contentResult) return "";
@@ -1457,12 +1941,25 @@ export async function POST(request: Request) {
       }
       if (!parsedJson) {
         renderedImages = await renderPdfImages(buffer);
+        usedPdfOcrFallback = true;
         try {
-          parsedJson = await callVisionModel(renderedImages, preferredLanguage);
-          usedPdfOcrFallback = true;
-          extractionSource = "vision-model";
+          const ocrText = await ocrImagesToText(renderedImages);
+          if (!ocrText || ocrText.trim().length <= 80) {
+            console.warn("OCR text extraction returned empty/short text for pdf, falling back to vision model");
+          } else {
+            parsedJson = await callTextModel(ocrText, preferredLanguage);
+            extractionSource = "ocr-text";
+          }
         } catch (err) {
-          console.warn("vision model failed for pdf, falling back to OCR text", err);
+          console.warn("OCR text extraction failed for pdf, falling back to vision model", err);
+        }
+        if (!parsedJson) {
+          try {
+            parsedJson = await callVisionModel(renderedImages, preferredLanguage);
+            extractionSource = "vision-model";
+          } catch (err) {
+            console.warn("vision model failed for pdf, falling back to OCR text", err);
+          }
         }
       }
     } else if (textContent && textContent.trim().length > 0) {
@@ -1472,32 +1969,28 @@ export async function POST(request: Request) {
       const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
       renderedImages = [dataUrl];
       try {
-        parsedJson = await callVisionModel(renderedImages, preferredLanguage);
-        extractionSource = "vision-model";
+        const ocrText = await ocrImagesToText(renderedImages);
+        if (!ocrText || ocrText.trim().length <= 80) {
+          console.warn("OCR text extraction returned empty/short text for image, falling back to vision model");
+        } else {
+          parsedJson = await callTextModel(ocrText, preferredLanguage);
+          extractionSource = "ocr-text";
+        }
       } catch (err) {
-        console.warn("vision model failed for image, falling back to OCR text", err);
+        console.warn("OCR text extraction failed for image, falling back to vision model", err);
+      }
+      if (!parsedJson) {
+        try {
+          parsedJson = await callVisionModel(renderedImages, preferredLanguage);
+          extractionSource = "vision-model";
+        } catch (innerErr) {
+          console.warn("vision model failed for image, falling back to OCR text", innerErr);
+        }
       }
     } else {
       throw new Error(
         "No text extracted and file type unsupported for OCR fallback."
       );
-    }
-
-    // Normalize parsedJson fields for UI compatibility
-    if (parsedJson) {
-      parsedJson.summary = parsedJson.main_summary || parsedJson.summary;
-      parsedJson.extra_details = Array.isArray(parsedJson.extra_details)
-        ? parsedJson.extra_details.filter(
-            (s: any) => typeof s === "string" && s.trim().length > 0
-          )
-        : [];
-      parsedJson.key_fields = parsedJson.key_fields || {};
-      if (!parsedJson.key_fields.language) {
-        parsedJson.key_fields.language = preferredLanguage;
-      }
-      if (usedPdfOcrFallback && !parsedJson.badge_text) {
-        parsedJson.badge_text = "Scanned letter (please double-check numbers)";
-      }
     }
 
     if (!parsedJson || !parsedJson.summary) {
@@ -1507,17 +2000,6 @@ export async function POST(request: Request) {
         if (ocrText && ocrText.trim().length > 80) {
           parsedJson = await callTextModel(ocrText, preferredLanguage);
           extractionSource = "ocr-text";
-          if (parsedJson) {
-            parsedJson.summary = parsedJson.main_summary || parsedJson.summary;
-            parsedJson.extra_details = Array.isArray(parsedJson.extra_details)
-              ? parsedJson.extra_details.filter(
-                  (s: any) => typeof s === "string" && s.trim().length > 0
-                )
-              : [];
-            if (usedPdfOcrFallback && !parsedJson.badge_text) {
-              parsedJson.badge_text = "Scanned letter (please double-check numbers)";
-            }
-          }
         }
       }
     }
@@ -1787,4 +2269,6 @@ export async function POST(request: Request) {
 export {
   mapToCategoryPath,
   buildFriendlyTitle,
+  normalizeExtraction,
+  shouldCreateAppealTask,
 };

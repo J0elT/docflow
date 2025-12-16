@@ -5,11 +5,16 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { getLocaleForLanguage, useLanguage } from "@/lib/language";
+import { extractDateRangeToIso, formatDateYmdMon, formatYearMonthYmdMon, replaceIsoDatesInText } from "@/lib/dateFormat";
+import { replaceMoneyInText } from "@/lib/moneyFormat";
+import { isStandaloneNoActionSentence } from "@/lib/summary";
 import { createPortal } from "react-dom";
 import viewIcon from "../../images/view.png";
 import saveIcon from "../../images/save.png";
 import binIcon from "../../images/bin.png";
 import deepDiveIcon from "../../images/ai-technology.png";
+import starAiIcon from "../../images/starai.png";
+import trashIcon from "../../images/bin.png";
 
 type ExtractionRow = {
   content: {
@@ -62,6 +67,8 @@ type TableRow = {
   category_suggestion_confidence?: number | null;
   sender?: string;
   topic?: string;
+  document_date?: string | null;
+  billing_period?: string | null;
   amount?: string;
   due_date?: string | null;
   action_required?: boolean;
@@ -72,14 +79,26 @@ type TableRow = {
   main_summary?: string | null;
   badge_text?: string | null;
   extra_details?: string[];
-  deadlines?: { id?: string | null; date_exact?: string | null; description?: string | null; kind?: string | null }[];
+  deadlines?: {
+    id?: string | null;
+    date_exact?: string | null;
+    relative_text?: string | null;
+    kind?: string | null;
+    description?: string | null;
+    is_hard_deadline?: boolean | null;
+    confidence?: number | null;
+  }[];
   actions_required?: { id?: string | null; label?: string | null; due_date?: string | null; severity?: string | null }[];
   risk_level?: string | null;
   uncertainty_flags?: string[] | null;
   amounts?: { value?: number | null; currency?: string | null; direction?: string | null; description?: string | null }[];
   domain_profile_label?: string | null;
   tags?: string[];
+  contact_person?: string | null;
+  contact_phone?: string | null;
+  contact_email?: string | null;
   reference_ids?: string[];
+  reference_id_entries?: { key: string; value: string }[];
   workflow_status?: string | null;
 };
 
@@ -195,12 +214,14 @@ export default function DocumentTable({
 }: Props) {
   const { lang, t } = useLanguage();
   const [rows, setRows] = useState<TableRow[]>([]);
+  const [optimisticRows, setOptimisticRows] = useState<TableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | undefined>(undefined);
   const [previewName, setPreviewName] = useState<string | null>(null);
   const [busyRow, setBusyRow] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [userNameHints, setUserNameHints] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<
     { id: string; path: string; displayPath: string; displayLabel: string }[]
   >([]);
@@ -213,7 +234,9 @@ export default function DocumentTable({
     due: string;
     urgency: string;
   } | null>(null);
+  const [actionMenuRow, setActionMenuRow] = useState<TableRow | null>(null);
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set());
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [isMounted, setIsMounted] = useState(false);
   const [flashingComplete, setFlashingComplete] = useState<Set<string>>(new Set());
@@ -226,6 +249,30 @@ export default function DocumentTable({
   const [chatLoading, setChatLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const kindleButtonStyle: React.CSSProperties = {
+    padding: "10px 18px",
+    borderRadius: "14px",
+    background: "rgb(243,238,226)",
+    border: "1px solid rgba(0,0,0,0.35)",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.12)",
+    letterSpacing: "0.08em",
+    fontSize: "13px",
+    textTransform: "uppercase",
+    color: "rgba(20,20,20,0.9)",
+  };
+
+  const handleCopy = useCallback(async (key: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((prev) => (prev === key ? null : prev));
+      }, 1200);
+    } catch (err) {
+      console.warn("copy failed", err);
+    }
+  }, []);
 
   // Auto-collapse expanded paths after a short delay to avoid clutter.
   useEffect(() => {
@@ -275,13 +322,57 @@ export default function DocumentTable({
 
   useEffect(() => {
     if (onProcessingChange) {
-      const hasProcessing = rows.some((r) => r.status !== "done");
+      const hasProcessing =
+        rows.some((r) => r.status !== "done") ||
+        optimisticRows.some((r) => r.status !== "done");
       onProcessingChange(hasProcessing);
     }
-  }, [rows, onProcessingChange]);
+  }, [rows, optimisticRows, onProcessingChange]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const handleOptimisticStart = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail;
+      if (!detail?.tempId) return;
+      setOptimisticRows((prev) => [
+        {
+          id: detail.tempId,
+          title: detail.title || "Dokument",
+          status: "processing",
+          error_message: null,
+          storage_path: detail.storage_path || undefined,
+          category_id: null,
+          case_id: null,
+          created_at: detail.created_at || new Date().toISOString(),
+          summary: detail.summary ?? undefined,
+          main_summary: detail.main_summary ?? undefined,
+          badge_text: t("loading"),
+          extra_details: [],
+          category_path: undefined,
+          tasks: [],
+        } as TableRow,
+        ...prev.filter((p) => p.id !== detail.tempId),
+      ]);
+    };
+    const handleOptimisticComplete = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail;
+      setOptimisticRows((prev) =>
+        prev.filter(
+          (p) =>
+            (detail?.storage_path && p.storage_path !== detail.storage_path) &&
+            (detail?.tempId && p.id !== detail.tempId)
+        )
+      );
+    };
+    const handleOptimisticFailed = (event: Event) => {
+      const detail = (event as CustomEvent<any>).detail;
+      setOptimisticRows((prev) => prev.filter((p) => p.id !== detail?.tempId));
+    };
+
+    window.addEventListener("docflow:optimistic-upload-start", handleOptimisticStart as EventListener);
+    window.addEventListener("docflow:optimistic-upload-complete", handleOptimisticComplete as EventListener);
+    window.addEventListener("docflow:optimistic-upload-failed", handleOptimisticFailed as EventListener);
+
     try {
       const stored = localStorage.getItem("docflowHiddenDocs");
       if (stored) {
@@ -294,6 +385,12 @@ export default function DocumentTable({
       console.error("failed to load hidden docs", err);
     }
     setIsMounted(true);
+
+    return () => {
+      window.removeEventListener("docflow:optimistic-upload-start", handleOptimisticStart as EventListener);
+      window.removeEventListener("docflow:optimistic-upload-complete", handleOptimisticComplete as EventListener);
+      window.removeEventListener("docflow:optimistic-upload-failed", handleOptimisticFailed as EventListener);
+    };
   }, []);
 
   const persistHidden = (next: Set<string>) => {
@@ -423,17 +520,92 @@ export default function DocumentTable({
     }
   };
 
-const buildGist = (summary?: string | null) => {
+const truncateAtWord = (value: string, limit: number) => {
+  const trimmed = value.trim();
+  if (trimmed.length <= limit) return trimmed;
+  const slice = trimmed.slice(0, Math.max(0, limit - 1));
+  const cut = slice.replace(/\s+\S*$/, "").trim();
+  return `${(cut || slice).trim()}…`;
+};
+
+const cleanSummaryText = (value: string) => {
+  let s = value.trim();
+  if (!s) return s;
+
+  // Remove IDs and overly specific tokens from summary (those belong in Reference/Details).
+  s = s.replace(/\b(iban|bic)\s*[:#]?\s*[A-Z]{2}\d{2}[A-Z0-9\s]{10,}\b/gi, "$1");
+  s = s.replace(/\b(invoice|rechnung)\s*[:#]?\s*[A-Z0-9][A-Z0-9-]{4,}\b/gi, "$1");
+  s = s.replace(
+    /\b(customer(?:\s*(?:no\.?|number))?|kundennummer|kundennr\.?|customer-nr)\s*[:#]?\s*[A-Z0-9-]{4,}\b/gi,
+    (m) => m.replace(/\s*[:#]?\s*[A-Z0-9-]{4,}\b/i, "")
+  );
+  s = s.replace(/\b(order(?:\s*(?:no\.?|number))?|bestell(?:nr\.?|nummer))\s*[:#]?\s*[A-Z0-9-]{4,}\b/gi, (m) =>
+    m.replace(/\s*[:#]?\s*[A-Z0-9-]{4,}\b/i, "")
+  );
+  s = s.replace(/\b(creditor\s*id|gläubiger-?id)\s*[:#]?\s*[A-Z0-9-]{6,}\b/gi, "$1");
+  s = s.replace(/\b(mandate\s*(?:ref\.?|reference)?|mandatsreferenz)\s*[:#]?\s*[A-Z0-9-]{8,}\b/gi, "$1");
+  s = s.replace(/\(\s*(?:no\.?|nr\.?)\s*[A-Z0-9-]{4,}\s*\)/gi, "");
+  s = s.replace(/\(\s*mandate\s*\)/gi, "");
+  s = s.replace(/\bfor\s+[A-Z0-9-]{6,}\b\s*:?\s*/gi, "");
+  s = s.replace(/\bfor\s+\d{6,}\b\s*:?\s*/gi, "");
+
+  // Strip legal citations in summaries (too noisy for the first read).
+  s = s.replace(/§\s*\d+[a-zA-Z]*/g, "").replace(/\bSGB\s*[IVX]+\b/gi, "");
+
+  // Normalize whitespace/punctuation leftovers.
+  s = s.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
+  s = s.replace(/^[,.;:!?]\s*/, "").trim();
+  // Strip orphaned trailing prepositions (often left after removing legal citations, e.g. "... nach.").
+  s = s.replace(/\b(?:nach|zu|für|gemäß|gemaess|laut)\b[ .,:;!?]*$/i, "").trim();
+  s = s.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
+  s = s.replace(/^[,.;:!?]\s*/, "").trim();
+  return s;
+};
+
+const buildGist = (summary?: string | null, lang?: string) => {
   if (!summary) return null;
   const trimmed = summary.trim();
   if (!trimmed) return null;
-  const sentences = trimmed
+  const rawSentences = trimmed
     .split(/(?<=[.!?])\s+/)
+    .map((s) => cleanSummaryText(s))
     .map((s) => s.trim())
     .filter(Boolean);
-  const gist = sentences.slice(0, 2).join(" ");
-  const limited = gist.slice(0, 220);
-  return limited || trimmed;
+
+  const hasMultipleSentences = rawSentences.length > 1;
+
+  const isLowValueTail = (s: string) => {
+    const norm = s
+      .toLowerCase()
+      .replace(/[…]/g, "...")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!norm) return true;
+    if (hasMultipleSentences && isStandaloneNoActionSentence(s)) return true;
+    if (/^(period|zeitraum|periode)\.\.\.?$/.test(norm)) return true;
+    // Optional/legalese sentences overwhelm; keep deadlines in Key facts instead.
+    if (/(dispute|disputes|appeal|objection|widerspruch|einspruch|acht\s+wochen|within\s+\d+\s+weeks)/.test(norm)) return true;
+    return false;
+  };
+
+  const sentences = rawSentences.filter((s) => !isLowValueTail(s));
+  const pick = (arr: string[]) => {
+    let gist = "";
+    for (const sentence of arr.slice(0, 2)) {
+      const candidate = (gist ? `${gist} ${sentence}` : sentence).trim();
+      if (candidate.length > 220) break;
+      gist = candidate;
+    }
+    if (gist) return gist;
+    const first = arr[0] || "";
+    return first ? truncateAtWord(first, 220) : null;
+  };
+
+  const out = pick(sentences) ?? pick(rawSentences) ?? truncateAtWord(cleanSummaryText(trimmed) || trimmed, 220);
+  if (!out) return null;
+  const normalized = out.replace(/[—]/g, "-");
+  const withDates = replaceIsoDatesInText(normalized, lang) ?? normalized;
+  return replaceMoneyInText(withDates, lang) ?? withDates;
 };
 
 const buildDetailBullets = (
@@ -448,6 +620,49 @@ const buildDetailBullets = (
       .replace(/[.,;:!?()[\]"']/g, "")
       .replace(/\s+/g, " ")
       .trim();
+
+  const isNoisyExtra = (value: string) => {
+    const n = normalize(value);
+    const token = n.replace(/\s+/g, "");
+    if (!token) return true;
+    // Hide admin/PII facts from the calm UI: IDs, bank details, birthdates, tax/VAT refs.
+    if (
+      token.includes("iban") ||
+      token.includes("bic") ||
+      token.includes("invoiceno") ||
+      token.includes("invoicenumber") ||
+      token.includes("rechnungsnr") ||
+      token.includes("rechnungsnummer") ||
+      token.includes("customerno") ||
+      token.includes("customernumber") ||
+      token.includes("kundennr") ||
+      token.includes("kundennummer") ||
+      token.includes("mandat") ||
+      token.includes("mandatsreferenz") ||
+      token.includes("mandatref") ||
+      token.includes("creditorid") ||
+      token.includes("glaubigerid") ||
+      token.includes("gläubigerid") ||
+      token.includes("taxno") ||
+      token.includes("taxnumber") ||
+      token.includes("steuernr") ||
+      token.includes("steuernummer") ||
+      token.includes("birthdate") ||
+      token.includes("geburtsdatum") ||
+      token.includes("geburtstag") ||
+      token.includes("vat") ||
+      token.includes("mwst") ||
+      token.includes("ust") ||
+      token.includes("insuranceno") ||
+      token.includes("versicherungsnummer") ||
+      token.includes("policyno")
+    ) {
+      return true;
+    }
+    const compact = value.replace(/\s+/g, "");
+    if (/\bde\d{2}[a-z0-9]{10,}\b/i.test(compact)) return true;
+    return false;
+  };
 
   const extractNumberTokens = (value: string) =>
     Array.from(value.matchAll(/\d[\d.,\/-]*/g)).map((m) => m[0].replace(/[^\d]/g, ""));
@@ -465,6 +680,7 @@ const buildDetailBullets = (
   const score = (text: string) => {
     const t = text.toLowerCase();
     const has = (...keys: string[]) => keys.some((k) => t.includes(k));
+    if (has("monat", "monthly", "tagessatz", "daily rate", "leistungszeitraum", "benefit period")) return 0;
     if (has("zahlungseingang", "paid", "payment received", "lastschrift", "abbuchung")) return 0;
     if (has("frist", "deadline", "due ", "bis ")) return 1;
     if (has("betrag", "summe", "total", "gesamt", "eur", "usd", "invoice", "rechnung")) return 2;
@@ -506,6 +722,7 @@ const buildDetailBullets = (
     if (typeof raw !== "string") continue;
     const s = raw.trim();
     if (!s || s.length < 4) continue;
+    if (isNoisyExtra(s)) continue;
     const norm = normalize(s);
     if (!norm) continue;
     if (isDuplicateOfSummary(norm)) continue;
@@ -524,15 +741,931 @@ const getTodayStart = () => {
   return d.getTime();
 };
 
-const formatDate = (iso: string | null | undefined, lang: string) => {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(getLocaleForLanguage(lang as any), {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
+const formatDate = (iso: string | null | undefined, _lang: string) => formatDateYmdMon(iso, _lang);
+
+type DetailItem = {
+  label?: string | null;
+  value: string;
+  display?: string;
+  note?: string | null;
+  copy?: string | null;
+  kind?: "text" | "date" | "phone" | "email";
+};
+
+type DetailsGroup = {
+  id: "key_facts" | "contact";
+  title: string;
+  items: DetailItem[];
+};
+
+const normalizeDetailToken = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[\s.,;:!?()[\]"'\\/\\-]/g, "")
+    .trim();
+
+function extractIsoDate(value: string) {
+  const m = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  return m?.[1] ?? null;
+}
+
+function extractDateKey(text: string) {
+  const iso = extractFlexibleDateIso(text) ?? extractIsoDate(text);
+  if (iso) return iso;
+  const d = new Date(text);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  return null;
+}
+
+const normalizeDetailItem = (item: DetailItem) => {
+  const label = item.label ? normalizeDetailToken(item.label) : "";
+  const raw = item.copy ?? item.value;
+  if (item.kind === "phone" || item.kind === "email") {
+    return `${item.kind}:${normalizeDetailToken(raw)}`;
+  }
+  if (item.kind === "date") {
+    const iso = extractIsoDate(raw) ?? raw;
+    return `${label}:${normalizeDetailToken(iso)}`;
+  }
+  return `${label}:${normalizeDetailToken(raw)}`;
+};
+
+const pushUniqueItem = (items: DetailItem[], seen: Set<string>, item: DetailItem | null | undefined) => {
+  if (!item) return;
+  const value = (item.value || "").trim();
+  const display = typeof item.display === "string" ? item.display.trim() : "";
+  const note = typeof item.note === "string" ? item.note.trim() : "";
+  if (!value && !display) return;
+  const normalizedItem = { ...item, value, display: display || undefined };
+  const norm = normalizeDetailItem(normalizedItem);
+  if (!norm) return;
+
+  // Merge duplicate contact facts (same phone/email) by enriching the first note instead of rendering twice.
+  if (seen.has(norm)) {
+    const existing = items.find((i) => normalizeDetailItem(i) === norm);
+    if (existing) {
+      const existingNote = typeof existing.note === "string" ? existing.note.trim() : "";
+      if (!existingNote && note) {
+        existing.note = note;
+      } else if (note && existingNote && !existingNote.includes(note)) {
+        existing.note = `${existingNote} ${note}`.trim();
+      }
+    }
+    return;
+  }
+
+  seen.add(norm);
+  items.push({ ...item, value, display: display || undefined, note: note || undefined });
+};
+
+const dedupeDetailItems = (items: DetailItem[]) => {
+  const deduped: DetailItem[] = [];
+  const seen = new Map<string, DetailItem>();
+
+  for (const item of items) {
+    const norm = normalizeDetailItem(item);
+    if (!norm) continue;
+    const existing = seen.get(norm);
+    if (!existing) {
+      const cleanNote = typeof item.note === "string" ? item.note.trim() : "";
+      const cleanDisplay = typeof item.display === "string" ? item.display.trim() : item.display;
+      const cleanValue = typeof item.value === "string" ? item.value.trim() : item.value;
+      const next: DetailItem = {
+        ...item,
+        value: cleanValue,
+        display: cleanDisplay || undefined,
+        note: cleanNote || undefined,
+      };
+      seen.set(norm, next);
+      deduped.push(next);
+      continue;
+    }
+    const existingNote = typeof existing.note === "string" ? existing.note.trim() : "";
+    const newNote = typeof item.note === "string" ? item.note.trim() : "";
+    if (newNote && !existingNote) {
+      existing.note = newNote;
+    } else if (newNote && existingNote && !existingNote.includes(newNote)) {
+      existing.note = `${existingNote} ${newNote}`.trim();
+    }
+  }
+
+  return deduped;
+};
+
+const dedupeDateFacts = (items: DetailItem[]) => {
+  const result: DetailItem[] = [];
+  const seen = new Map<string, DetailItem>();
+
+  for (const item of items) {
+    if (item.kind === "date") {
+      const iso = extractDateKey(item.value) ?? extractDateKey(item.display || "");
+      if (iso) {
+        const existing = seen.get(iso);
+        if (!existing) {
+          seen.set(iso, item);
+          result.push(item);
+          continue;
+        }
+        continue;
+      }
+    }
+    result.push(item);
+  }
+
+  return result;
+};
+
+const extractFlexibleDateIso = (value: string) => {
+  const iso = extractIsoDate(value);
+  if (iso) return iso;
+  const m = value.match(/\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  return `${year}-${mm}-${dd}`;
+};
+
+const parseLabeledFact = (bullet: string) => {
+  const parts = bullet.split(/:\s+/, 2);
+  if (parts.length !== 2) return null;
+  const label = parts[0]?.trim();
+  const value = parts[1]?.trim();
+  if (!label || !value) return null;
+  const key = normalizeDetailToken(label);
+  return { label, value, key };
+};
+
+const formatBillingPeriod = (iso: string, _lang: string) => {
+  return formatYearMonthYmdMon(iso, _lang) ?? iso;
+};
+
+const buildDetailsGroups = (
+  row: TableRow,
+  pendingTasks: TaskRow[],
+  lang: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  opts?: { userNameHints?: string[] | null }
+): DetailsGroup[] => {
+  const keyFacts: DetailItem[] = [];
+  const contacts: DetailItem[] = [];
+  const seenFacts = new Set<string>();
+  const seenContacts = new Set<string>();
+
+  const normalizeName = (value: string) =>
+    value
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\(.*?\)/g, " ")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const stripHonorifics = (value: string) =>
+    value
+      .replace(
+        /^(herr|frau|hr|fr|mr|mrs|ms|mme|m\.?|dr\.?|prof\.?|professor|doktor)\s+/i,
+        ""
+      )
+      .trim();
+
+  const userNameHints = Array.isArray(opts?.userNameHints)
+    ? opts!.userNameHints!.filter((s) => typeof s === "string" && s.trim())
+    : [];
+
+  const isLikelyUserName = (candidate: string) => {
+    const c = stripHonorifics(normalizeName(candidate));
+    if (!c) return false;
+    const cTokens = c.split(" ").filter(Boolean);
+    const cKey = cTokens.join("");
+    for (const hint of userNameHints) {
+      const h = stripHonorifics(normalizeName(hint));
+      if (!h) continue;
+      if (c === h) return true;
+      const hTokens = h.split(" ").filter(Boolean);
+      const hKey = hTokens.join("");
+      if (cKey && hKey && cKey.length >= 6 && hKey.length >= 6) {
+        if (cKey.includes(hKey) || hKey.includes(cKey)) return true;
+      }
+      const minSize = Math.min(cTokens.length, hTokens.length);
+      if (minSize < 2) continue;
+      const cSet = new Set(cTokens);
+      let overlap = 0;
+      for (const token of hTokens) {
+        if (cSet.has(token)) overlap += 1;
+      }
+      if (overlap >= minSize) return true;
+    }
+    return false;
+  };
+
+  const parseLocaleNumber = (raw: string) => {
+    const s = raw.replace(/\s+/g, "").trim();
+    if (!s) return null;
+    const unsigned = s.replace(/^[+-]/, "");
+    if (!unsigned) return null;
+    const hasComma = unsigned.includes(",");
+    const hasDot = unsigned.includes(".");
+
+    let normalized = unsigned;
+    if (hasComma && hasDot) {
+      const lastComma = unsigned.lastIndexOf(",");
+      const lastDot = unsigned.lastIndexOf(".");
+      if (lastComma > lastDot) {
+        normalized = unsigned.replace(/\./g, "").replace(",", ".");
+      } else {
+        normalized = unsigned.replace(/,/g, "");
+      }
+    } else if (hasComma) {
+      const parts = unsigned.split(",");
+      const looksGrouped =
+        parts.length > 2
+          ? parts.slice(1).every((p) => p.length === 3)
+          : parts.length === 2 && parts[1].length === 3 && parts[0].length <= 3;
+      if (looksGrouped) {
+        normalized = unsigned.replace(/,/g, "");
+      } else if (parts.length === 2) {
+        normalized = `${parts[0]}.${parts[1]}`;
+      }
+    } else if (hasDot) {
+      const parts = unsigned.split(".");
+      const looksGrouped =
+        parts.length > 2
+          ? parts.slice(1).every((p) => p.length === 3)
+          : parts.length === 2 && parts[1].length === 3 && parts[0].length <= 3;
+      if (looksGrouped) {
+        normalized = unsigned.replace(/\./g, "");
+      } else {
+        normalized = unsigned;
+      }
+    }
+
+    if (s.startsWith("-") && normalized && !normalized.startsWith("-")) {
+      normalized = `-${normalized}`;
+    }
+    const out = Number.parseFloat(normalized.replace(/^\+/, ""));
+    return Number.isFinite(out) ? out : null;
+  };
+
+  const extractMoney = (text: string) => {
+    const raw = text || "";
+    if (!raw.trim()) return null;
+    const currencyCodes = ["EUR", "USD", "GBP", "CHF", "PLN", "RON", "TRY", "UAH", "RUB"];
+    const codeRe = currencyCodes.join("|");
+    const symbolRe = /[€$£]/;
+    const numberRe = "(\\d[\\d.,\\s]{0,20}\\d|\\d)";
+
+    const matchSymbolFirst = raw.match(new RegExp(`(${symbolRe.source})\\s*${numberRe}`));
+    if (matchSymbolFirst) {
+      const symbol = matchSymbolFirst[1];
+      const num = matchSymbolFirst[2];
+      const amount = parseLocaleNumber(num);
+      const currency = symbol === "€" ? "EUR" : symbol === "£" ? "GBP" : symbol === "$" ? "USD" : null;
+      if (amount !== null) return { raw: matchSymbolFirst[0].trim(), amount, currency };
+    }
+
+    const matchCodeAfter = raw.match(new RegExp(`${numberRe}\\s*(${codeRe})\\b`, "i"));
+    if (matchCodeAfter) {
+      const num = matchCodeAfter[1];
+      const currency = matchCodeAfter[2].toUpperCase();
+      const amount = parseLocaleNumber(num);
+      if (amount !== null) return { raw: matchCodeAfter[0].trim(), amount, currency };
+    }
+
+    const matchSymbolAfter = raw.match(new RegExp(`${numberRe}\\s*(${symbolRe.source})`));
+    if (matchSymbolAfter) {
+      const num = matchSymbolAfter[1];
+      const symbol = matchSymbolAfter[2];
+      const amount = parseLocaleNumber(num);
+      const currency = symbol === "€" ? "EUR" : symbol === "£" ? "GBP" : symbol === "$" ? "USD" : null;
+      if (amount !== null) return { raw: matchSymbolAfter[0].trim(), amount, currency };
+    }
+
+    return null;
+  };
+
+  const stripFirstOccurrence = (haystack: string, needle: string) => {
+    if (!haystack || !needle) return haystack;
+    const idx = haystack.indexOf(needle);
+    if (idx < 0) return haystack;
+    const combined = `${haystack.slice(0, idx)}${haystack.slice(idx + needle.length)}`.replace(/\s+/g, " ").trim();
+    return combined.replace(/^[,;:()\-–—\s]+/, "").replace(/[\s,;:()\-–—]+$/, "").trim();
+  };
+
+  const isMoneyLikeLabel = (label: string) => {
+    const n = normalizeDetailToken(label);
+    return (
+      /(monthly|monat|daily|tagessatz|amount|total|gesamt|betrag|summe|payout|auszahlung|zahlung|nachzahlung|rückzahlung|rueckzahlung|fee|gebuehr|gebühr|charge|refund|backpay|backpayment)/.test(
+        n
+      ) || /(eur|usd|gbp|chf)/.test(n)
+    );
+  };
+
+  const isPeriodLikeLabel = (label: string) => {
+    const n = normalizeDetailToken(label);
+    return /(zeitraum|period|timeframe|coverage|validity|sperrzeit|sperrfrist|ruhezeit|ruhenszeit|blockperiod|waitingperiod)/.test(
+      n
+    );
+  };
+
+  const isFollowUpLikeText = (text: string) => {
+    const n = normalizeDetailToken(text);
+    return /(followup|follow|pending|separat|separate|separater|weitere|further|entscheidung|decision|letterwillfollow|willfollow)/.test(
+      n
+    );
+  };
+
+  const isAppealLikeLabel = (label: string) => {
+    const n = normalizeDetailToken(label);
+    return /(appeal|objection|widerspruch|einspruch)/.test(n);
+  };
+
+  const isTotalLikeLabel = (label: string) => {
+    const n = normalizeDetailToken(label);
+    return /(amounttotal|total|gesamtbetrag|gesamtsumme|betrag|summe)/.test(n);
+  };
+
+  const hasExactDateInText = (text: string) => !!extractDateKey(text);
+
+  const normalizePhoneForCopy = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return trimmed;
+    const digits = trimmed.replace(/[^\d+]/g, "");
+    return digits.startsWith("00") ? `+${digits.slice(2)}` : digits;
+  };
+
+  const formatInlineText = (value: string) => {
+    const normalized = value.replace(/[—]/g, "-");
+    const withDates = replaceIsoDatesInText(normalized, lang) ?? normalized;
+    return replaceMoneyInText(withDates, lang) ?? withDates;
+  };
+  const formatInlineNote = (note: string | null | undefined) => {
+    const cleaned = typeof note === "string" ? note.trim() : "";
+    return cleaned ? formatInlineText(cleaned) : null;
+  };
+
+  const isBirthdateKey = (key: string, label: string) => {
+    const joined = `${key} ${label}`.toLowerCase();
+    return joined.includes("birth") || joined.includes("geburt") || joined.includes("dob");
+  };
+
+  const isReferenceLike = (key: string, label: string, value: string) => {
+    const joined = `${key} ${label} ${value}`.toLowerCase();
+    return (
+      joined.includes("iban") ||
+      joined.includes("bic") ||
+      joined.includes("customer") ||
+      joined.includes("kunde") ||
+      joined.includes("invoice") ||
+      joined.includes("rechnung") ||
+      joined.includes("mandate") ||
+      joined.includes("mandat") ||
+      joined.includes("creditor") ||
+      joined.includes("gläubiger") ||
+      joined.includes("tax") ||
+      joined.includes("steuer") ||
+      joined.includes("versicher") ||
+      joined.includes("insurance") ||
+      joined.includes("policy") ||
+      joined.includes("member") ||
+      joined.includes("mitglied") ||
+      joined.includes("order") ||
+      joined.includes("bestell") ||
+      /\b[A-Z]{2}\d{2}[A-Z0-9]{10,}\b/.test(value.replace(/\s+/g, "").toUpperCase())
+    );
+  };
+
+  const scoreKeyFact = (item: DetailItem) => {
+    const label = normalizeDetailToken(item.label || "");
+    if (!label) return 5;
+    if (/(sperrzeit|sperrfrist|ruhenszeit|ruhezeit|sanktion|sanction|kuerzung|kurzung|ablehn|denied|rejected|rueckforder|ruckforder|mahnung|inkasso)/.test(label))
+      return 0;
+    if (/(amount|total|gesamt|betrag|nachzahlung|erstattung|refund|backpay|backpayment|fee|gebuehr|gebühr|charge)/.test(label))
+      return 1;
+    if (/(directdebit|lastschrift|abbuch|due|deadline|termin|appointment)/.test(label)) return 2;
+    if (/(monthly|monat)/.test(label)) return 2;
+    if (/(daily|tagessatz|taeglich|täglich)/.test(label)) return 2;
+    if (/(billingperiod|zeitraum|periode|abrechnungszeitraum|leistungszeitraum|period)/.test(label)) return 3;
+    if (/(followup|follow|separat|separate|weitere)/.test(label)) return 4;
+    if (/(documentdate|dokumentdatum)/.test(label)) return 9;
+    if (/(appeal|objection|widerspruch|einspruch)/.test(label)) return 10;
+    return 5;
+  };
+
+  // Key facts: keep short and predictable.
+  if (row.amount) {
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: t("detailsLabelAmountTotal"),
+	      value: row.amount,
+	      display: row.amount,
+	    });
+	  }
+  if (row.billing_period) {
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: t("detailsLabelBillingPeriod"),
+      value: row.billing_period,
+      display: formatBillingPeriod(row.billing_period, lang),
+      note: formatInlineNote(t("detailsNoteBillingPeriod")),
+    });
+  }
+  if (row.document_date) {
+    const dateStr = formatDate(row.document_date, lang) ?? row.document_date;
+    const titleWithDates = replaceIsoDatesInText(row.title, lang) ?? row.title;
+    const titleHasDate =
+      typeof titleWithDates === "string" && (titleWithDates.includes(dateStr) || titleWithDates.includes(row.document_date));
+    if (!titleHasDate) {
+      pushUniqueItem(keyFacts, seenFacts, {
+        label: t("detailsLabelDocumentDate"),
+        value: row.document_date,
+        display: dateStr,
+        kind: "date",
+      });
+    }
+  }
+
+  const parsedDeadlines = Array.isArray(row.deadlines)
+    ? row.deadlines
+        .filter((d) => typeof d?.date_exact === "string" && d.date_exact && !Number.isNaN(new Date(d.date_exact).getTime()))
+        .map((d) => ({
+          date: d.date_exact as string,
+          description: typeof d?.description === "string" && d.description.trim() ? d.description.trim() : "",
+        }))
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    : [];
+
+  const parsedRelativeDeadlines = Array.isArray(row.deadlines)
+    ? row.deadlines
+        .filter((d) => {
+          const hasExact = typeof d?.date_exact === "string" && !!d.date_exact.trim();
+          const rel = typeof d?.relative_text === "string" ? d.relative_text.trim() : "";
+          return !hasExact && !!rel;
+        })
+        .map((d) => ({
+          relative: (d.relative_text as string).trim(),
+          description: typeof d?.description === "string" && d.description.trim() ? d.description.trim() : "",
+          kind: typeof d?.kind === "string" && d.kind.trim() ? d.kind.trim() : "",
+          isHard: d?.is_hard_deadline === true,
+          confidence: typeof d?.confidence === "number" ? d.confidence : null,
+        }))
+        .sort((a, b) => Number(b.isHard) - Number(a.isHard) || (b.confidence ?? 0) - (a.confidence ?? 0))
+    : [];
+
+  const deadlineDates = new Set(parsedDeadlines.map((d) => d.date));
+  if (row.due_date && !deadlineDates.has(row.due_date)) {
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: t("detailsLabelDueDate"),
+      value: row.due_date,
+      display: formatDate(row.due_date, lang) ?? row.due_date,
+      kind: "date",
+    });
+  }
+
+  const directDebitKeywords = /(direct\s*debit|sepa|lastschrift|abbuch)/i;
+  const appealKeywords = /(appeal|objection|widerspruch|einspruch)/i;
+
+  for (const d of parsedRelativeDeadlines.slice(0, 3)) {
+    const rel = d.relative;
+    const isAppeal = d.kind.toLowerCase().includes("appeal") || appealKeywords.test(d.description) || appealKeywords.test(rel);
+    if (isAppeal) {
+      const label = lang === "de" ? t("detailsLabelObjectionBy") : t("detailsLabelAppealBy");
+      pushUniqueItem(keyFacts, seenFacts, {
+        label,
+        value: rel,
+        display: formatInlineText(rel),
+        note: formatInlineNote(t("detailsNoteAppealOptional")),
+        kind: "text",
+      });
+      continue;
+    }
+    if (!d.isHard) continue;
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: t("detailsLabelDeadline"),
+      value: rel,
+      display: formatInlineText(rel),
+      note: d.description ? formatInlineNote(d.description) : null,
+      kind: "text",
+    });
+  }
+
+  for (const d of parsedDeadlines.slice(0, 3)) {
+    const dateStr = formatDate(d.date, lang) ?? d.date;
+    if (d.description && directDebitKeywords.test(d.description)) {
+      pushUniqueItem(keyFacts, seenFacts, {
+        label: t("detailsLabelDirectDebit"),
+        value: d.date,
+        display: dateStr,
+        note: formatInlineNote(t("detailsNoteDirectDebit")),
+        kind: "date",
+      });
+      continue;
+    }
+    if (d.description && appealKeywords.test(d.description)) {
+      const label = lang === "de" ? t("detailsLabelObjectionBy") : t("detailsLabelAppealBy");
+      pushUniqueItem(keyFacts, seenFacts, {
+        label,
+        value: d.date,
+        display: dateStr,
+        note: formatInlineNote(t("detailsNoteAppealOptional")),
+        kind: "date",
+      });
+      continue;
+    }
+    // Fall back to a generic deadline label to avoid long prose in Details.
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: t("detailsLabelDeadline"),
+      value: d.date,
+      display: dateStr,
+      kind: "date",
+    });
+  }
+
+  // Contacts from structured fields.
+  if (row.contact_person) {
+    const trimmed = row.contact_person.trim();
+    const looksPhone = /\d[\d\s()./-]{5,}\d/.test(trimmed);
+    if (looksPhone) {
+      pushUniqueItem(contacts, seenContacts, {
+        label: t("detailsLabelContactPhone"),
+        value: trimmed,
+        display: trimmed,
+        copy: normalizePhoneForCopy(trimmed),
+        kind: "phone",
+      });
+    } else {
+      if (!isLikelyUserName(trimmed)) {
+        pushUniqueItem(contacts, seenContacts, {
+          label: t("detailsLabelContactPerson"),
+          value: trimmed,
+          display: trimmed,
+        });
+      }
+    }
+  }
+  if (row.contact_phone) {
+    const trimmed = row.contact_phone.trim();
+    pushUniqueItem(contacts, seenContacts, {
+      label: t("detailsLabelContactPhone"),
+      value: trimmed,
+      display: trimmed,
+      copy: normalizePhoneForCopy(trimmed),
+      kind: "phone",
+    });
+  }
+  if (row.contact_email) {
+    const trimmed = row.contact_email.trim();
+    pushUniqueItem(contacts, seenContacts, {
+      label: t("detailsLabelContactEmail"),
+      value: trimmed,
+      display: trimmed,
+      copy: trimmed,
+      kind: "email",
+    });
+  }
+
+  if (row.followup_note) {
+    const note = row.followup_note.trim();
+    if (note) {
+      const formatted = formatInlineText(note);
+      pushUniqueItem(keyFacts, seenFacts, {
+        label: t("detailsLabelFollowUp"),
+        value: formatted,
+        display: truncateAtWord(formatted, 180),
+      });
+    }
+  }
+
+  // Extra bullets: route into Key facts / Reference / Contact, and normalize common noisy ones.
+  const extraBullets = buildDetailBullets(row.summary || row.main_summary, row.extra_details, pendingTasks.map((t) => t.title));
+  for (const bullet of extraBullets) {
+    const parsed = parseLabeledFact(bullet);
+    if (!parsed) continue;
+    const { label, value, key } = parsed;
+
+    // Skip duplicates of already-shown core fields.
+    if (key === "documentdate" || key === "letterdate") continue;
+    if (key === "billingperiod" && row.billing_period) continue;
+    if (isBirthdateKey(key, label)) continue;
+    if (isReferenceLike(key, label, value)) continue;
+
+    // Payment signals: prefer a calm, date-only representation.
+    if (/^(paymentreceived|paid|zahlungseingang|bezahlt)$/.test(key) || /payment\s+received|zahlungseingang|paid/i.test(label)) {
+      const iso = extractFlexibleDateIso(value) ?? extractIsoDate(value);
+      if (iso) {
+        pushUniqueItem(keyFacts, seenFacts, {
+          label: t("detailsLabelPaidDate"),
+          value: iso,
+          display: formatDate(iso, lang) ?? iso,
+          note: formatInlineNote(t("detailsNotePaid")),
+          kind: "date",
+        });
+      }
+      continue;
+    }
+
+    // Contact-like fields.
+    const isEmail = /@/.test(value) || key.includes("email") || key.includes("mail");
+    const isPhone =
+      key.includes("phone") ||
+      key.includes("telefon") ||
+      key.startsWith("tel") ||
+      key.includes("mobile") ||
+      key.includes("handy") ||
+      key.includes("fax");
+    const isContact =
+      isEmail || isPhone || key.includes("kontakt") || key.includes("contact") || key.includes("ansprechpartner");
+    if (isContact) {
+      const looksLikeSignature = /(signatur|unterschrift|signature)/i.test(`${label} ${value}`);
+      if (looksLikeSignature) continue;
+      if (isEmail) {
+        pushUniqueItem(contacts, seenContacts, {
+          label: t("detailsLabelContactEmail"),
+          value,
+          display: value,
+          copy: value.trim(),
+          kind: "email",
+        });
+      } else if (isPhone || /\d[\d\s()./-]{5,}\d/.test(value)) {
+        pushUniqueItem(contacts, seenContacts, {
+          label: t("detailsLabelContactPhone"),
+          value,
+          display: value,
+          copy: normalizePhoneForCopy(value),
+          kind: "phone",
+        });
+      } else {
+        if (!isLikelyUserName(value)) {
+          pushUniqueItem(contacts, seenContacts, {
+            label: t("detailsLabelContactPerson"),
+            value,
+            display: value,
+          });
+        }
+      }
+      continue;
+    }
+
+    // Otherwise treat as a key fact (short, copyable).
+    if (/^(vat|mwst|ust)$/.test(key) || /vat|mwst|umsatzsteuer/i.test(label)) continue;
+    const splitNote = (raw: string) => {
+      const trimmed = raw.trim();
+      if (!trimmed) return { value: trimmed, note: "" };
+      const m = trimmed.match(/^(.+?)\s*[—–]\s+(.+)$/);
+      if (m) return { value: m[1].trim(), note: m[2].trim() };
+      const m2 = trimmed.match(/^(.+?)\s+-\s+(.+)$/);
+      if (m2) return { value: m2[1].trim(), note: m2[2].trim() };
+      return { value: trimmed, note: "" };
+    };
+    const { value: valueMain, note: valueNoteRaw } = splitNote(value);
+    const monthlyLabel =
+      /monthly|monat/i.test(label) ? t("detailsLabelMonthlyAmount")
+        : /daily|tagessatz|täglich|taeglich/i.test(label) ? t("detailsLabelDailyRate")
+          : null;
+    const labelNote =
+      /monthly|monat/i.test(label) ? t("detailsNoteMonthlyAmount")
+        : /daily|tagessatz|täglich|taeglich/i.test(label) ? t("detailsNoteDailyRate")
+          : null;
+
+    if (isPeriodLikeLabel(label)) {
+      const range = extractDateRangeToIso(valueMain);
+      if (range) {
+        const rangeValue = `${range.start} to ${range.end}`;
+        const combinedNote = valueNoteRaw || labelNote;
+        pushUniqueItem(keyFacts, seenFacts, {
+          label,
+          value: rangeValue,
+          display: replaceIsoDatesInText(rangeValue, lang) ?? rangeValue,
+          note: formatInlineNote(combinedNote),
+          kind: "text",
+        });
+        continue;
+      }
+    }
+
+    const iso = extractDateKey(valueMain);
+    let valueNote = valueNoteRaw;
+    const labelLooksMoney = isMoneyLikeLabel(label) || /monthly|monat|daily|tagessatz/i.test(label);
+
+    // Salvage common model drift: amount labels that accidentally put the date in `value`
+    // and the money amount in the explanatory tail.
+    if (labelLooksMoney && iso && valueNote) {
+      const money = extractMoney(valueNote);
+      if (money) {
+        const dateStr = formatDate(iso, lang) ?? iso;
+        valueNote = stripFirstOccurrence(valueNote, money.raw);
+        valueNote = valueNote ? `${valueNote} (${dateStr})` : `(${dateStr})`;
+        pushUniqueItem(keyFacts, seenFacts, {
+          label: monthlyLabel ? `${monthlyLabel}${label.includes("(") ? ` ${label.slice(label.indexOf("("))}` : ""}` : label,
+          value: money.raw,
+          display: money.raw,
+          note: formatInlineNote(valueNote),
+          kind: "text",
+        });
+        continue;
+      }
+    }
+
+    // Shipping details: hide "shipping cost 0" noise unless it carries a tracking number.
+    if (/shipping|versand|liefer/i.test(label) && /0[.,]00\s*(eur|€|usd|\$|gbp|£)/i.test(value)) {
+      const hasTracking = /(tracking|sendungsnummer|shipment)/i.test(value) || /\b[A-Z0-9]{10,}\b/.test(value.replace(/\s+/g, ""));
+      if (!hasTracking) continue;
+    }
+
+    const combinedNote = valueNote || labelNote;
+    pushUniqueItem(keyFacts, seenFacts, {
+      label: monthlyLabel ? `${monthlyLabel}${label.includes("(") ? ` ${label.slice(label.indexOf("("))}` : ""}` : label,
+      value: iso ?? valueMain,
+      display: iso ? (formatDate(iso, lang) ?? iso) : formatInlineText(valueMain),
+      note: formatInlineNote(combinedNote),
+      kind: iso ? "date" : "text",
+    });
+  }
+
+  // De-dupe across common "double" facts (same money amount, multiple follow-ups, appeal boilerplate).
+  let dedupedFacts = [...keyFacts];
+
+  // Drop appeal entries that carry no concrete value (e.g., model emitted "null" as value).
+  dedupedFacts = dedupedFacts.filter((i) => {
+    if (!isAppealLikeLabel(i.label || "")) return true;
+    const v = (i.value || "").trim().toLowerCase();
+    return v && v !== "null";
   });
+
+  const hasAppealDate = dedupedFacts.some((i) => isAppealLikeLabel(i.label || "") && i.kind === "date");
+  if (hasAppealDate) {
+    dedupedFacts = dedupedFacts.filter((i) => !(isAppealLikeLabel(i.label || "") && i.kind !== "date"));
+  }
+
+  const appealDateGroups = new Map<string, DetailItem[]>();
+  for (const item of dedupedFacts) {
+    if (!isAppealLikeLabel(item.label || "")) continue;
+    const key = extractDateKey(item.value) ?? extractDateKey(item.display || "");
+    if (!key) continue;
+    const list = appealDateGroups.get(key) || [];
+    list.push(item);
+    appealDateGroups.set(key, list);
+  }
+  const dropAppeal = new Set<DetailItem>();
+  for (const [, group] of appealDateGroups) {
+    if (group.length <= 1) continue;
+    const ranked = group
+      .map((item) => {
+        const label = normalizeDetailToken(item.label || "");
+        const isAppealBy =
+          label.includes("appealby") ||
+          label.includes("objectionby") ||
+          label.includes("widerspruchbis") ||
+          label.includes("einspruchbis");
+        const isDeadline = label.includes("deadline");
+        const weight = isAppealBy ? 0 : isDeadline ? 1 : 2;
+        return { item, weight, len: (item.display || item.value).length };
+      })
+      .sort((a, b) => a.weight - b.weight || a.len - b.len);
+    const keep = ranked[0]?.item;
+    for (const { item } of ranked.slice(1)) {
+      if (keep && item !== keep) dropAppeal.add(item);
+    }
+  }
+  if (dropAppeal.size) {
+    dedupedFacts = dedupedFacts.filter((i) => !dropAppeal.has(i));
+  }
+
+  const followUps = dedupedFacts.filter((i) => isFollowUpLikeText(i.label || "") || isFollowUpLikeText(i.display || i.value));
+  if (followUps.length > 1) {
+    const best = [...followUps].sort((a, b) => (b.display || b.value).length - (a.display || a.value).length)[0];
+    dedupedFacts = dedupedFacts.filter((i) => !followUps.includes(i) || i === best);
+  }
+
+  const moneyGroups = new Map<string, DetailItem[]>();
+  for (const item of dedupedFacts) {
+    const money = extractMoney(item.value) ?? extractMoney(item.display || "");
+    if (!money) continue;
+    const key = `${money.currency || ""}:${money.amount.toFixed(2)}`;
+    const list = moneyGroups.get(key) || [];
+    list.push(item);
+    moneyGroups.set(key, list);
+  }
+  const dropMoney = new Set<DetailItem>();
+  for (const [, group] of moneyGroups) {
+    if (group.length <= 1) continue;
+
+    const pickBest = (items: DetailItem[]) =>
+      items
+        .map((item) => ({ item, len: (item.display || item.value).length }))
+        .sort((a, b) => b.len - a.len)[0]?.item;
+
+    const rateLike = (item: DetailItem) =>
+      /(monthly|monat|daily|tagessatz|taeglich|täglich|rate|pro\s+tag|pro\s+monat)/.test(
+        normalizeDetailToken(item.label || "")
+      );
+    const oneOffLike = (item: DetailItem) =>
+      /\b(nachzahlung|erstattung|rueckzahlung|ruckzahlung|backpay|backpayment|arrears|refund|reimbursement|einmal|einmalig|one\s*off|one[-\s]?time)\b/.test(
+        normalizeDetailToken(`${item.label || ""} ${(item.display || item.value) || ""}`)
+      );
+    const upcomingLike = (item: DetailItem) => {
+      const n = normalizeDetailToken(item.label || "");
+      return /(upcoming|next|nächste|naechste)/.test(n) && /(payment|zahlung|auszahlung)/.test(n);
+    };
+
+    const rateItems = group.filter(rateLike);
+    const oneOffItems = group.filter(oneOffLike);
+    const totalItems = group.filter((i) => isTotalLikeLabel(i.label || ""));
+
+    const keep = new Set<DetailItem>();
+    const bestRate = pickBest(rateItems);
+    const bestOneOff = pickBest(oneOffItems);
+    const bestTotal = pickBest(totalItems);
+
+    if (bestRate && bestOneOff) {
+      keep.add(bestRate);
+      keep.add(bestOneOff);
+    } else if (bestOneOff) {
+      keep.add(bestOneOff);
+    } else if (bestRate && bestTotal) {
+      const rateLabel = normalizeDetailToken(bestRate.label || "");
+      const preferRate =
+        /(auszahlung|payout|benefit|leistung|arbeitslosen|unemployment)/.test(rateLabel);
+      keep.add(preferRate ? bestRate : bestTotal);
+    } else if (bestTotal) {
+      keep.add(bestTotal);
+    } else if (bestRate) {
+      keep.add(bestRate);
+    } else {
+      const bestAny = pickBest(group);
+      if (bestAny) keep.add(bestAny);
+    }
+
+    for (const item of group) {
+      if (keep.has(item)) continue;
+      // Upcoming/next payment is almost always redundant when the same amount appears elsewhere.
+      if (upcomingLike(item)) {
+        dropMoney.add(item);
+        continue;
+      }
+      dropMoney.add(item);
+    }
+  }
+  if (dropMoney.size) {
+    dedupedFacts = dedupedFacts.filter((i) => !dropMoney.has(i));
+  }
+
+  // If a label indicates a time period ("Zeitraum"/"period") but only a single start date is present,
+  // try to expand it to a start+end range using other extracted date ranges on the card.
+  const rangesByStart = new Map<string, string>();
+  for (const item of keyFacts) {
+    const combined = [item.display, item.value, item.note]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .join(" | ");
+    if (!combined) continue;
+    const range = extractDateRangeToIso(combined);
+    if (!range) continue;
+    const existing = rangesByStart.get(range.start);
+    if (!existing || existing < range.end) rangesByStart.set(range.start, range.end);
+  }
+
+  dedupedFacts = dedupedFacts.map((item) => {
+    if (!item.label || item.kind !== "date") return item;
+    if (!isPeriodLikeLabel(item.label)) return item;
+    const alreadyRange =
+      extractDateRangeToIso(item.value) ||
+      extractDateRangeToIso(item.display || "") ||
+      extractDateRangeToIso(item.note || "");
+    if (alreadyRange) return item;
+
+    const startIso = extractDateKey(item.value) ?? extractDateKey(item.display || "");
+    if (!startIso) return item;
+    const endIso = rangesByStart.get(startIso);
+    if (!endIso) {
+      const fromValue = `${t("detailsPrefixFrom")} ${startIso}`;
+      return {
+        ...item,
+        display: replaceIsoDatesInText(fromValue, lang) ?? fromValue,
+      };
+    }
+
+    const rangeValue = `${startIso} to ${endIso}`;
+
+    return {
+      ...item,
+      value: rangeValue,
+      display: replaceIsoDatesInText(rangeValue, lang) ?? rangeValue,
+      kind: "text",
+    };
+  });
+
+  // Keep Key facts short; Reference/Contact can be a bit longer (since it's behind Details).
+  const dedupedDateFacts = dedupeDateFacts(dedupedFacts);
+  const sortedFacts = [...dedupedDateFacts].sort((a, b) => scoreKeyFact(a) - scoreKeyFact(b));
+  const dedupedContacts = dedupeDetailItems(contacts);
+  const groups: DetailsGroup[] = [
+    { id: "key_facts", title: t("detailsKeyFacts"), items: sortedFacts.slice(0, 6) },
+    { id: "contact", title: t("detailsContact"), items: dedupedContacts.slice(0, 4) },
+  ];
+
+  return groups.filter((g) => g.items.length > 0);
 };
 
 const computeDueBadge = (
@@ -564,7 +1697,80 @@ const computeDueBadge = (
   if (daysDiff === 0) return { label: t("dueToday"), tone: "warn" as const };
   if (daysDiff === 1) return { label: t("dueInOne"), tone: "info" as const };
   if (daysDiff <= 7) return { label: t("dueInDays", { days: daysDiff }), tone: "info" as const };
-  return { label: t("dueInDays", { days: daysDiff }), tone: "muted" as const };
+	  return { label: t("dueInDays", { days: daysDiff }), tone: "muted" as const };
+	};
+
+type StatusLine = { label: string; tone: "warn" | "muted" | "info" };
+
+const computeStatusLine = (
+  row: TableRow,
+  pendingTasks: TaskRow[],
+  lang: string,
+  t: (key: string, vars?: Record<string, string | number>) => string
+): StatusLine | null => {
+  const hasAction = row.action_required || (pendingTasks ?? []).length > 0;
+  if (!hasAction) return { label: t("noActionRequired"), tone: "muted" };
+
+  const taskDue = pendingTasks
+    .map((t) => (t.due_date ? new Date(t.due_date).getTime() : null))
+    .filter((t): t is number => t !== null && !Number.isNaN(t))
+    .sort((a, b) => a - b)[0];
+  const fallbackDue =
+    row.due_date && !Number.isNaN(new Date(row.due_date).getTime())
+      ? new Date(row.due_date).getTime()
+      : null;
+  const due = taskDue ?? fallbackDue;
+  if (due) {
+    const iso = new Date(due).toISOString().slice(0, 10);
+    const dueBadge = computeDueBadge(row, pendingTasks, t);
+    return {
+      label: t("actionNeededBy", { date: formatDate(iso, lang) ?? iso }),
+      tone: dueBadge?.tone ?? "info",
+    };
+  }
+
+  if (pendingTasks.length) {
+    const label =
+      pendingTasks.length === 1
+        ? t("openTasks", { count: pendingTasks.length })
+        : t("openTasksPlural", { count: pendingTasks.length });
+    return { label, tone: "info" };
+  }
+
+  const actionDescription = typeof row.action_text === "string" ? row.action_text.trim() : "";
+  if (actionDescription) {
+    const formatted = (replaceIsoDatesInText(actionDescription, lang) ?? actionDescription).replace(/[—]/g, "-");
+    return { label: truncateAtWord(formatted, 120), tone: "info" };
+  }
+  return { label: t("actionRequired"), tone: "info" };
+};
+
+const sortPendingTasks = (a: TaskRow, b: TaskRow) => {
+  const dueTime = (value: string | null | undefined) => {
+    if (!value) return Number.POSITIVE_INFINITY;
+    const t = new Date(value).getTime();
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
+  const urgencyRank = (value: string | null | undefined) => {
+    const v = (value || "").toLowerCase();
+    if (v === "high") return 0;
+    if (v === "normal") return 1;
+    if (v === "low") return 2;
+    return 3;
+  };
+
+  const dueA = dueTime(a.due_date);
+  const dueB = dueTime(b.due_date);
+  const hasDueA = Number.isFinite(dueA) ? 0 : 1;
+  const hasDueB = Number.isFinite(dueB) ? 0 : 1;
+  if (hasDueA !== hasDueB) return hasDueA - hasDueB;
+  if (dueA !== dueB) return dueA - dueB;
+
+  const urgA = urgencyRank(a.urgency);
+  const urgB = urgencyRank(b.urgency);
+  if (urgA !== urgB) return urgA - urgB;
+
+  return (a.title || "").localeCompare(b.title || "");
 };
 
 const fetchDocs = useCallback(
@@ -594,6 +1800,15 @@ const fetchDocs = useCallback(
         }
         setUserId(user.id);
 
+        const metaFullName =
+          typeof (user.user_metadata as any)?.full_name === "string" && (user.user_metadata as any).full_name.trim()
+            ? String((user.user_metadata as any).full_name).trim()
+            : null;
+        const email =
+          typeof (user as any)?.email === "string" && String((user as any).email).trim()
+            ? String((user as any).email).trim()
+            : null;
+
         const docsQuery = supabase
           .from("documents")
           .select(
@@ -611,7 +1826,7 @@ const fetchDocs = useCallback(
           docsQuery.eq("case_id", caseFilter);
         }
 
-        const [docsRes, catsRes, catTransRes, tasksRes, casesRes] = await Promise.all([
+        const [docsRes, catsRes, catTransRes, tasksRes, casesRes, profileRes] = await Promise.all([
           docsQuery,
           supabase
             .from("categories")
@@ -624,9 +1839,10 @@ const fetchDocs = useCallback(
             .eq("lang", lang),
           supabase
             .from("tasks")
-            .select("id, document_id, title, status, due_date")
+            .select("id, document_id, title, status, due_date, urgency")
             .eq("user_id", user.id),
           supabase.from("cases").select("id, title, status").eq("user_id", user.id),
+          supabase.from("profiles").select("full_name, username").eq("id", user.id).maybeSingle(),
         ]);
 
         if (docsRes.error) throw docsRes.error;
@@ -638,6 +1854,36 @@ const fetchDocs = useCallback(
           throw catTransRes.error;
         if (casesRes.error && (casesRes.error as { code?: string }).code !== "42P01")
           throw casesRes.error;
+
+        const nameHints = new Set<string>();
+        if (metaFullName) nameHints.add(metaFullName);
+        if (email) {
+          nameHints.add(email);
+          const local = email.split("@")[0]?.trim();
+          if (local) {
+            nameHints.add(local);
+            const spaced = local.replace(/[._-]+/g, " ").trim();
+            if (spaced && spaced !== local) nameHints.add(spaced);
+          }
+        }
+        if (!profileRes.error) {
+          const fullName =
+            typeof (profileRes.data as any)?.full_name === "string" && (profileRes.data as any).full_name.trim()
+              ? String((profileRes.data as any).full_name).trim()
+              : null;
+          const username =
+            typeof (profileRes.data as any)?.username === "string" && (profileRes.data as any).username.trim()
+              ? String((profileRes.data as any).username).trim()
+              : null;
+          if (fullName) nameHints.add(fullName);
+          if (username) nameHints.add(username);
+        } else {
+          const code = (profileRes.error as { code?: string } | null)?.code;
+          if (code !== "42P01") {
+            console.warn("profiles lookup failed (ignored)", profileRes.error);
+          }
+        }
+        setUserNameHints(Array.from(nameHints));
 
         const catMap = new Map<string, CategoryRow>();
         const cats = (catsRes.data as CategoryRow[] | null) ?? [];
@@ -745,22 +1991,56 @@ const fetchDocs = useCallback(
           (docsRes.data as DocumentRow[] | null)?.map((doc) => {
             const latest = pickLatestExtraction(doc.extra as ExtractionRow[] | undefined);
             const keyFields = (latest?.key_fields ?? {}) as Record<string, unknown>;
+            const summary =
+              typeof latest?.summary === "string" && latest.summary.trim()
+                ? latest.summary.trim()
+                : undefined;
             const mainSummary =
               typeof (latest as any)?.main_summary === "string" && (latest as any)?.main_summary?.trim()
                 ? ((latest as any)?.main_summary as string).trim()
-                : typeof latest?.summary === "string" && latest.summary.trim()
-                  ? latest.summary.trim()
-                  : undefined;
+                : undefined;
+            const resolvedSummary = summary || mainSummary;
+            const resolvedMainSummary = mainSummary || summary || null;
             const badgeText =
               typeof (latest as any)?.badge_text === "string" && (latest as any)?.badge_text?.trim()
                 ? ((latest as any)?.badge_text as string).trim()
                 : null;
-            const extraDetails =
-              Array.isArray((latest as any)?.extra_details) && (latest as any)?.extra_details.length
-                ? ((latest as any)?.extra_details as string[]).filter(
-                    (s) => typeof s === "string" && s.trim().length > 0
-                  )
-                : [];
+	            const extraDetails =
+	              Array.isArray((latest as any)?.extra_details) && (latest as any)?.extra_details.length
+	                ? ((latest as any)?.extra_details as string[]).filter(
+	                    (s) => typeof s === "string" && s.trim().length > 0
+	                  )
+	                : [];
+	            const documentDate =
+	              typeof (latest as any)?.key_fields?.document_date === "string" && (latest as any)?.key_fields?.document_date?.trim()
+	                ? ((latest as any)?.key_fields?.document_date as string).trim()
+	                : typeof (latest as any)?.key_fields?.letter_date === "string" && (latest as any)?.key_fields?.letter_date?.trim()
+	                  ? ((latest as any)?.key_fields?.letter_date as string).trim()
+	                  : null;
+	            const billingPeriod =
+	              typeof (latest as any)?.key_fields?.billing_period === "string" && (latest as any)?.key_fields?.billing_period?.trim()
+	                ? ((latest as any)?.key_fields?.billing_period as string).trim()
+	                : null;
+	            const contactPerson =
+	              typeof (latest as any)?.key_fields?.contact_person === "string" && (latest as any)?.key_fields?.contact_person?.trim()
+	                ? ((latest as any)?.key_fields?.contact_person as string).trim()
+	                : null;
+	            const contactPhone =
+	              typeof (latest as any)?.key_fields?.contact_phone === "string" && (latest as any)?.key_fields?.contact_phone?.trim()
+	                ? ((latest as any)?.key_fields?.contact_phone as string).trim()
+	                : null;
+	            const contactEmail =
+	              typeof (latest as any)?.key_fields?.contact_email === "string" && (latest as any)?.key_fields?.contact_email?.trim()
+	                ? ((latest as any)?.key_fields?.contact_email as string).trim()
+	                : null;
+	            const refEntries =
+	              (latest as any)?.key_fields?.reference_ids &&
+	              typeof (latest as any)?.key_fields?.reference_ids === "object" &&
+	              !Array.isArray((latest as any)?.key_fields?.reference_ids)
+	                ? (Object.entries((latest as any)?.key_fields?.reference_ids as Record<string, unknown>)
+	                    .filter(([, v]) => typeof v === "string" && !!v.trim())
+	                    .map(([k, v]) => ({ key: k, value: (v as string).trim() })) ?? [])
+	                : [];
             const deadlinesArr = Array.isArray((latest as any)?.deadlines)
               ? ((latest as any)?.deadlines as any[])
                   .filter((d) => d && typeof d === "object")
@@ -770,6 +2050,10 @@ const fetchDocs = useCallback(
                       typeof (d as any)?.date_exact === "string" && (d as any)?.date_exact.trim()
                         ? ((d as any)?.date_exact as string).trim()
                         : null,
+                    relative_text:
+                      typeof (d as any)?.relative_text === "string" && (d as any)?.relative_text.trim()
+                        ? ((d as any)?.relative_text as string).trim()
+                        : null,
                     description:
                       typeof (d as any)?.description === "string" && (d as any)?.description.trim()
                         ? ((d as any)?.description as string).trim()
@@ -778,6 +2062,9 @@ const fetchDocs = useCallback(
                       typeof (d as any)?.kind === "string" && (d as any)?.kind.trim()
                         ? ((d as any)?.kind as string).trim()
                         : null,
+                    is_hard_deadline:
+                      typeof (d as any)?.is_hard_deadline === "boolean" ? ((d as any)?.is_hard_deadline as boolean) : null,
+                    confidence: typeof (d as any)?.confidence === "number" ? ((d as any)?.confidence as number) : null,
                   }))
               : [];
             const earliestDeadline = deadlinesArr
@@ -875,11 +2162,11 @@ const fetchDocs = useCallback(
               category_suggestion_slug: categorySuggestionSlug,
               category_suggestion_path: categorySuggestionPath,
               category_suggestion_confidence: categorySuggestionConfidence,
-              followup_note: followup,
-              summary: mainSummary,
-              main_summary: mainSummary,
-              badge_text: badgeText,
-              extra_details: extraDetails,
+	              followup_note: followup,
+	              summary: resolvedSummary,
+	              main_summary: resolvedMainSummary,
+	              badge_text: badgeText,
+	              extra_details: extraDetails,
               deadlines: deadlinesArr,
               actions_required: Array.isArray((latest as any)?.actions_required)
                 ? ((latest as any)?.actions_required as any[])
@@ -911,25 +2198,47 @@ const fetchDocs = useCallback(
                 : null,
               amounts: amountsArr,
               domain_profile_label: domainProfile,
-              tags:
-                Array.isArray((latest as any)?.tags) && (latest as any)?.tags.length
-                  ? ((latest as any)?.tags as string[]).filter((s) => typeof s === "string" && s.trim().length > 0)
-                  : [],
-              reference_ids:
-                (latest as any)?.key_fields?.reference_ids && typeof (latest as any)?.key_fields?.reference_ids === "object"
-                  ? (Object.values((latest as any)?.key_fields?.reference_ids as Record<string, unknown>).filter(
-                      (v): v is string => typeof v === "string" && !!v.trim()
-                    ) ?? [])
-                  : ([] as string[]),
-              workflow_status:
-                typeof (latest as any)?.key_fields?.workflow_status === "string" &&
-                ((latest as any)?.key_fields?.workflow_status as string).trim()
-                  ? ((latest as any)?.key_fields?.workflow_status as string).trim()
+	              tags:
+	                Array.isArray((latest as any)?.tags) && (latest as any)?.tags.length
+	                  ? ((latest as any)?.tags as string[]).filter((s) => typeof s === "string" && s.trim().length > 0)
+	                  : [],
+	              document_date: documentDate,
+	              billing_period: billingPeriod,
+	              contact_person: contactPerson,
+	              contact_phone: contactPhone,
+	              contact_email: contactEmail,
+	              reference_ids:
+	                refEntries.length
+	                  ? refEntries.map((e) => e.value)
+	                  : (latest as any)?.key_fields?.reference_ids && typeof (latest as any)?.key_fields?.reference_ids === "object"
+	                    ? (Object.values((latest as any)?.key_fields?.reference_ids as Record<string, unknown>).filter(
+	                        (v): v is string => typeof v === "string" && !!v.trim()
+	                      ) ?? [])
+	                  : ([] as string[]),
+	              reference_id_entries: refEntries,
+	              workflow_status:
+	                typeof (latest as any)?.key_fields?.workflow_status === "string" &&
+	                ((latest as any)?.key_fields?.workflow_status as string).trim()
+	                  ? ((latest as any)?.key_fields?.workflow_status as string).trim()
                   : null,
             };
           }) ?? [];
 
-        setRows(mapped.filter((r) => r.status !== "error"));
+        const fetched = mapped.filter((r) => r.status !== "error");
+        const fetchedPaths = new Set(
+          fetched.map((r) => (r.storage_path ? r.storage_path.toLowerCase() : ""))
+        );
+        const optimisticKeep = optimisticRows.filter((o) => {
+          if (!o.storage_path) return true;
+          return !fetchedPaths.has(o.storage_path.toLowerCase());
+        });
+        const combined = [...optimisticKeep, ...fetched].sort((a, b) => {
+          const ta = new Date(a.created_at).getTime();
+          const tb = new Date(b.created_at).getTime();
+          if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+          return tb - ta;
+        });
+        setRows(combined);
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : "Failed to load data");
@@ -981,6 +2290,7 @@ const fetchDocs = useCallback(
 
   const isHome = mode === "home";
   const visibleRows = isHome ? rows.filter((r) => !hiddenDocIds.has(r.id)) : rows;
+  const processingRows = isHome ? visibleRows.filter((r) => r.status !== "done") : [];
   const openRows = isHome
     ? visibleRows.filter(
         (r) => r.status === "done" && (r.tasks ?? []).some((t) => t.status !== "done")
@@ -992,10 +2302,589 @@ const fetchDocs = useCallback(
       )
     : [];
 
-  const renderTable = (
-    data: TableRow[],
-    opts?: { noTasksSection?: boolean; emptyMessage?: string }
-  ) => (
+  const renderDetailsGroups = (rowId: string, detailsGroups: DetailsGroup[]) => {
+    const splitValueAndNote = (raw: string, kind: DetailItem["kind"], isContact: boolean) => {
+      const trimmed = raw.trim();
+      const m = trimmed.match(/^(.+?)\s*[–—-]\s+(.+)$/);
+      if (m) {
+        const trailing = m[2].trim();
+        const hasLetters = /[A-Za-zÀ-ÿ]/.test(trailing);
+        if (isContact && hasLetters) {
+          return { value: m[1].trim(), extraNote: trailing };
+        }
+      }
+      return { value: trimmed, extraNote: "" };
+    };
+
+    return (
+      <div className="pit-subtitle text-xs" style={{ lineHeight: 1.5, color: "rgba(0,0,0,0.75)" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {detailsGroups.map((group) => (
+            <div key={`${rowId}-details-${group.id}`}>
+              <div className="text-[11px] font-medium" style={{ color: "rgba(0,0,0,0.55)", marginBottom: "4px" }}>
+                {group.title}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {group.items
+                  .filter((item) => {
+                    const rawVal = (item.display ?? item.value ?? "").toString().trim();
+                    const lower = rawVal.toLowerCase();
+                    const isPlaceholder =
+                      ["neutral", "unknown", "n/a", "na", "null", "keine angabe", "not provided"].includes(lower) ||
+                      lower.startsWith("null");
+                    const hasVal = rawVal && lower !== "null" && !isPlaceholder;
+                    const hasNote = typeof item.note === "string" && item.note.trim().length > 0;
+                    return hasVal || hasNote;
+                  })
+                  .map((item, idx) => {
+                    const showLabel = typeof item.label === "string" && item.label.trim().length > 0;
+                    const rawVal = (item.display ?? item.value ?? "").toString().trim();
+                    const lower = rawVal.toLowerCase();
+                    const isPlaceholder =
+                      ["neutral", "unknown", "n/a", "na", "null", "keine angabe", "not provided"].includes(lower) ||
+                      lower.startsWith("null");
+                    const hasValue = rawVal && lower !== "null" && !isPlaceholder;
+                    const { value: splitValue, extraNote } = hasValue
+                      ? splitValueAndNote(rawVal, item.kind, group.id === "contact")
+                      : { value: "", extraNote: "" };
+                    const value = hasValue ? splitValue : "";
+                    const noteRaw = typeof item.note === "string" && item.note.trim().length > 0 ? item.note.trim() : "";
+                    const note = noteRaw || (group.id === "contact" ? extraNote : "");
+                    return (
+                      <div
+                        key={`${rowId}-${group.id}-item-${idx}`}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: showLabel ? "minmax(0, 140px) 1fr" : "1fr",
+                          gap: "2px 12px",
+                          alignItems: "baseline",
+                        }}
+                      >
+                        {showLabel ? (
+                          <div style={{ color: "rgba(0,0,0,0.6)", fontSize: "12px", fontWeight: 500 }}>
+                            {item.label}
+                          </div>
+                        ) : null}
+                        {value ? (
+                          <div
+                            style={{
+                              color: "rgba(0,0,0,0.78)",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              lineHeight: 1.35,
+                              display: "inline-flex",
+                              gap: "6px",
+                              alignItems: "center",
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <span>{value}</span>
+                            {item.copy && (item.kind === "phone" || item.kind === "email") ? (
+                              <button
+                                type="button"
+                                onClick={() => handleCopy(`${rowId}:${group.id}:${idx}`, item.copy as string)}
+                                style={{
+                                  border: "1px solid rgba(0,0,0,0.12)",
+                                  background: "rgba(255,255,255,0.7)",
+                                  borderRadius: "999px",
+                                  padding: "2px 8px",
+                                  fontSize: "11px",
+                                  color: "rgba(0,0,0,0.65)",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {copiedKey === `${rowId}:${group.id}:${idx}` ? t("copied") : t("copy")}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {note ? (
+                          <div
+                            style={{
+                              gridColumn: showLabel ? "2 / -1" : "1 / -1",
+                              color: "rgba(0,0,0,0.6)",
+                              fontSize: "11px",
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            {note}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCards = (data: TableRow[], opts?: { noTasksSection?: boolean; emptyMessage?: string }) => {
+    const showMoveToFiles = (row: TableRow, pending: TaskRow[]) =>
+      opts?.noTasksSection || pending.length === 0;
+    return (
+      <div className="flex flex-col gap-4">
+        {error ? (
+          <div className="pit-error">{error}</div>
+        ) : loading ? (
+          <div className="pit-muted">{t("loading")}</div>
+        ) : data.length === 0 ? (
+          <div className="pit-muted">{opts?.emptyMessage || t("noDocs")}</div>
+        ) : (
+		          data.map((row) => {
+		            const pendingTasks = (row.tasks?.filter((t) => t.status !== "done") ?? []).slice().sort(sortPendingTasks);
+		            const doneTasks = row.tasks?.filter((t) => t.status === "done") ?? [];
+			            const hasAnyTasks = pendingTasks.length > 0 || doneTasks.length > 0;
+			            const allDone = pendingTasks.length === 0 && doneTasks.length > 0;
+			            const gist = buildGist(row.summary || row.main_summary, lang);
+                  const displayTitle = replaceIsoDatesInText(row.title, lang) ?? row.title;
+		            const isSummaryExpanded = expandedSummaries.has(row.id);
+		            const isExpanded = mode !== "files" || expandedCards.has(row.id);
+		            const statusLine = isHome ? computeStatusLine(row, pendingTasks, lang, t) : null;
+	            const primaryAction = pendingTasks.length
+	              ? pendingTasks.length === 1
+	                ? t("openTasks", { count: pendingTasks.length })
+	                : t("openTasksPlural", { count: pendingTasks.length })
+	              : t("noActionRequired");
+            const detailsGroups = buildDetailsGroups(row, pendingTasks, lang, t, { userNameHints });
+            const hasDetails = detailsGroups.length > 0;
+            const topFacts: DetailItem[] = [];
+	            if (!isExpanded) {
+	              return (
+                <div
+                  key={row.id}
+                className="rounded-[18px] border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 shadow-sm"
+                style={{
+                  position: "relative",
+                  paddingTop: "24px",
+                  paddingBottom: "24px",
+                }}
+              >
+                  {row.status === "done" && (
+                    <div className="absolute" style={{ right: "12px", top: "12px" }}>
+                      <button
+                        type="button"
+                        aria-label="Actions"
+                        onClick={() => setActionMenuRow(row)}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          padding: "6px",
+                          fontSize: "20px",
+                          cursor: "pointer",
+                          color: "#000",
+                        }}
+                      >
+                        <span style={{ color: "#000" }}>⋮</span>
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-start justify-between gap-3 pr-4">
+                    <div className="flex flex-col gap-1" style={{ flex: 1 }}>
+                      <div className="font-medium" style={{ wordBreak: "break-word", paddingRight: "32px" }}>
+                        {displayTitle}
+                      </div>
+                      <div className="flex items-center gap-2" style={{ marginTop: "10px" }}>
+                        {mode === "files" ? (
+                          row.category_path ? (
+                            <span className="text-xs text-[rgba(0,0,0,0.65)]">{row.category_path}</span>
+                          ) : (
+                            <span className="text-xs text-[rgba(0,0,0,0.45)]">{t("noCategory") ?? ""}</span>
+                          )
+                        ) : (
+                          <span className="text-sm text-[rgba(0,0,0,0.78)]">{gist || primaryAction}</span>
+                        )}
+                      </div>
+                    </div>
+                    {mode === "files" && (
+                      <button
+                        type="button"
+                        aria-label={t("showDetails")}
+                        onClick={() =>
+                          setExpandedCards((prev) => {
+                            const next = new Set(prev);
+                            next.add(row.id);
+                            return next;
+                          })
+                        }
+                        className="text-lg"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            fontSize: "36px",
+                            lineHeight: 1,
+                            position: "absolute",
+                            right: "16px",
+                            bottom: "16px",
+                          }}
+                      >
+                        ▾
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={row.id}
+                className="rounded-[18px] border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 shadow-sm"
+                style={{
+                  position: "relative",
+                  paddingTop: "24px",
+                  paddingBottom: "24px",
+                }}
+                >
+                  {row.status === "done" && (
+                    <div className="absolute" style={{ right: "12px", top: "12px" }}>
+                      <button
+                        type="button"
+                        aria-label="Actions"
+                        onClick={() => setActionMenuRow(row)}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          padding: "6px",
+                          fontSize: "20px",
+                          cursor: "pointer",
+                          color: "#000",
+                        }}
+                      >
+                        <span style={{ color: "#000" }}>⋮</span>
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-3 pr-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3 pr-1">
+                      <div
+                        className="flex flex-col gap-1"
+                        style={{ flex: 1, paddingBottom: mode === "files" ? "8px" : "4px" }}
+	                      >
+	                        <div className="font-medium">{displayTitle}</div>
+	                        {statusLine ? (
+	                          <div
+	                            className="text-xs"
+	                            style={{
+	                              color:
+	                                statusLine.tone === "warn"
+	                                  ? "rgba(140,40,40,0.85)"
+	                                  : statusLine.tone === "info"
+	                                    ? "rgba(0,0,0,0.68)"
+	                                    : "rgba(0,0,0,0.55)",
+	                            }}
+	                          >
+	                            {statusLine.label}
+	                          </div>
+	                        ) : null}
+	                        {mode === "files" && (
+	                          <div className="flex items-center gap-2" style={{ marginTop: "3px" }}>
+	                            {row.category_path ? (
+	                              <span className="text-xs text-[rgba(0,0,0,0.65)]">{row.category_path}</span>
+	                            ) : (
+                              <span className="text-xs text-[rgba(0,0,0,0.45)]">{t("noCategory") ?? ""}</span>
+                            )}
+                          </div>
+                        )}
+                        {row.tags?.length ? (
+                          <div className="flex flex-wrap gap-2">
+                            {row.tags.slice(0, 4).map((tag, idx) => (
+                              <span
+                                key={`${row.id}-tag-top-${idx}`}
+                                style={{
+                                  padding: "6px 10px",
+                                  borderRadius: "999px",
+                                  border: "1px solid rgba(0,0,0,0.2)",
+                                  background: "rgba(0,0,0,0.03)",
+                                  fontSize: "12px",
+                                  lineHeight: 1.1,
+                                }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      {mode === "files" && (
+                        <button
+                          type="button"
+                          aria-label={t("hideDetails")}
+                          onClick={() =>
+                            setExpandedCards((prev) => {
+                              const next = new Set(prev);
+                              next.delete(row.id);
+                              return next;
+                            })
+                          }
+                          className="text-lg"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            fontSize: "36px",
+                            lineHeight: 1,
+                            position: "absolute",
+                            right: "16px",
+                            bottom: "16px",
+                          }}
+                        >
+                          ▴
+                        </button>
+                      )}
+                    </div>
+
+                  {hasAnyTasks && (
+                  <div className="flex flex-col gap-2" style={{ marginTop: "2px" }}>
+                    <div className="flex items-center justify-between">
+                      <span
+                        className="text-sm font-semibold"
+                        style={{ color: allDone ? "rgba(0,0,0,0.55)" : "rgba(0,0,0,0.75)" }}
+                      >
+                        {t("actionsHeader")}
+                      </span>
+                      {doneTasks.length > 0 && (
+                        <button
+                          onClick={() =>
+                            setExpandedCompleted((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(row.id)) next.delete(row.id);
+                              else next.add(row.id);
+                              return next;
+                            })
+                          }
+                          className="text-xs"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "2px 4px",
+                            color: "rgba(0,0,0,0.6)",
+                          }}
+                          aria-expanded={expandedCompleted.has(row.id)}
+                        >
+                          <span>{t("completed", { count: doneTasks.length })}</span>
+                          <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
+                            {expandedCompleted.has(row.id) ? "▾" : "▸"}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                    {pendingTasks.length === 0 ? null : (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "12px",
+                          overflowX: "auto",
+                          paddingBottom: "6px",
+                          scrollbarWidth: "thin",
+                        }}
+                      >
+                        {pendingTasks.map((task) => (
+                          <div
+                            key={task.id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: "12px",
+                              padding: "14px 16px",
+                              border: "1px solid rgba(0,0,0,0.14)",
+                              borderRadius: "16px",
+                              background: "rgba(255,255,255,0.6)",
+                              minWidth: "240px",
+                              maxWidth: "280px",
+                              flex: "0 0 auto",
+                              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.6)",
+                            }}
+                          >
+                            <span className="pit-subtitle text-xs" style={{ lineHeight: 1.4 }}>
+                              {task.title}
+                              {task.due_date ? (
+                                <>
+                                  {" · "}
+                                  <strong style={{ fontWeight: 700 }}>
+                                    {t("actionNeededBy", {
+                                      date: formatDate(task.due_date, lang) ?? "",
+                                    })}
+                                  </strong>
+                                </>
+                              ) : (
+                                ""
+                              )}
+                            </span>
+                            <button
+                              onClick={() => handleMarkClick(task)}
+                              disabled={busyRow === row.id}
+                              aria-label="Mark done"
+                              style={{
+                                width: 22,
+                                height: 22,
+                                minWidth: 22,
+                                minHeight: 22,
+                                borderRadius: 6,
+                                border: "2px solid rgba(0,0,0,0.35)",
+                                background: "transparent",
+                                padding: 0,
+                                lineHeight: 1,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                opacity: busyRow === row.id ? 0.6 : 1,
+                              }}
+                            >
+                              <span
+                                aria-hidden
+                                style={{
+                                  color: "#00a86b",
+                                  fontWeight: 700,
+                                  fontSize: "16px",
+                                  lineHeight: 1,
+                                }}
+                              >
+                                {flashingComplete.has(task.id) ? "✓" : ""}
+                              </span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {doneTasks.length > 0 && expandedCompleted.has(row.id) && (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "12px",
+                          overflowX: "auto",
+                          paddingBottom: "6px",
+                          scrollbarWidth: "thin",
+                        }}
+                      >
+                        {doneTasks.map((task) => (
+                          <div
+                            key={task.id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: "8px",
+                              padding: "12px 14px",
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              borderRadius: "12px",
+                              background: recentlyDone.has(task.id)
+                                ? "rgba(0,200,120,0.08)"
+                                : "rgba(0,0,0,0.02)",
+                              minWidth: "220px",
+                              flex: "0 0 auto",
+                            }}
+                          >
+                            <span
+                              className="pit-subtitle text-xs"
+                              style={{ lineHeight: 1.4, color: "rgba(0,0,0,0.7)" }}
+                            >
+                              {task.title}
+                              {task.due_date
+                                ? ` · ${t("actionNeededBy", { date: formatDate(task.due_date, lang) ?? "" })}`
+                                : ""}
+                              {" · done"}
+                            </span>
+                            <button
+                              onClick={() => handleMarkClick(task)}
+                              aria-label={t("completed", { count: 1 })}
+                              style={{
+                                width: 26,
+                                height: 26,
+                                borderRadius: 8,
+                                border: "1px solid rgba(0,0,0,0.2)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                background: "rgba(0,0,0,0.03)",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <span style={{ color: "#00a86b", fontWeight: 700, fontSize: "16px", lineHeight: 1 }}>
+                                ✓
+                              </span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  )}
+
+                  <div className="flex flex-col gap-2">
+                    {row.status !== "done" ? (
+                      <div className="flex items-center gap-3">
+                        <span className="inline-block h-4 w-4 animate-spin rounded-full border border-transparent border-t-current" />
+                        <button
+                          type="button"
+                          aria-label={t("delete")}
+                          onClick={() => handleCancelProcessing(row)}
+                          style={{
+                            border: "none",
+                            background: "rgba(255,255,255,0.6)",
+                            padding: "6px",
+                            borderRadius: "10px",
+                            cursor: "pointer",
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
+                          }}
+                        >
+                          <Image src={trashIcon} alt={t("delete")} width={18} height={18} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        {gist ? <span>{gist}</span> : null}
+                        {hasDetails && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedSummaries((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(row.id)) next.delete(row.id);
+                                  else next.add(row.id);
+                                  return next;
+                                })
+                              }
+                              className="text-xs self-start"
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                padding: "2px 4px",
+                                color: "rgba(0,0,0,0.65)",
+                              }}
+                              aria-expanded={isSummaryExpanded}
+                            >
+                              {isSummaryExpanded ? t("hideDetails") : t("showDetails")}
+                              <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
+                                {isSummaryExpanded ? "▴" : "▾"}
+                              </span>
+                            </button>
+                            {isSummaryExpanded && renderDetailsGroups(row.id, detailsGroups)}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    );
+  };
+
+	  const renderTable = (
+	    data: TableRow[],
+	    opts?: { noTasksSection?: boolean; emptyMessage?: string }
+	  ) => (
     <table className="pit-table">
       <thead>
         <tr>
@@ -1023,26 +2912,29 @@ const fetchDocs = useCallback(
               {opts?.emptyMessage || t("noDocs")}
             </td>
           </tr>
-        ) : (
-          data.map((row) => {
-            const pendingTasks = row.tasks?.filter((t) => t.status !== "done") ?? [];
-            const doneTasks = row.tasks?.filter((t) => t.status === "done") ?? [];
-            const isNoTaskRow = (row.tasks?.length ?? 0) === 0 && opts?.noTasksSection;
-            const gist = buildGist(row.main_summary || row.summary);
-            const isSummaryExpanded = expandedSummaries.has(row.id);
-            const dueBadge = computeDueBadge(row, pendingTasks, t);
+	        ) : (
+		          data.map((row) => {
+		            const pendingTasks = (row.tasks?.filter((t) => t.status !== "done") ?? []).slice().sort(sortPendingTasks);
+		            const doneTasks = row.tasks?.filter((t) => t.status === "done") ?? [];
+		            const isNoTaskRow = (row.tasks?.length ?? 0) === 0 && opts?.noTasksSection;
+		            const gist = buildGist(row.summary || row.main_summary, lang);
+                const displayTitle = replaceIsoDatesInText(row.title, lang) ?? row.title;
+		            const detailsGroups = buildDetailsGroups(row, pendingTasks, lang, t, { userNameHints });
+		            const hasDetails = detailsGroups.length > 0;
+	            const isSummaryExpanded = expandedSummaries.has(row.id);
+	            const dueBadge = computeDueBadge(row, pendingTasks, t);
             const primaryAction = pendingTasks.length
               ? pendingTasks.length === 1
                 ? t("openTasks", { count: pendingTasks.length })
                 : t("openTasksPlural", { count: pendingTasks.length })
               : t("noActionRequired");
             const badges: { label: string; tone: "warn" | "muted" | "info" }[] = [];
-            const badgeText =
-              typeof row.badge_text === "string" ? row.badge_text.trim() : "";
+            const badgeTextRaw = typeof row.badge_text === "string" ? row.badge_text.trim() : "";
+            const badgeText = (replaceIsoDatesInText(badgeTextRaw, lang) ?? badgeTextRaw).replace(/[—]/g, "-");
             const isNullishBadge =
-              badgeText === "" ||
-              badgeText.toLowerCase() === "null" ||
-              badgeText.toLowerCase() === "undefined";
+              badgeTextRaw === "" ||
+              badgeTextRaw.toLowerCase() === "null" ||
+              badgeTextRaw.toLowerCase() === "undefined";
             if (!isNullishBadge && badgeText) {
               badges.push({ label: badgeText, tone: "info" });
             } else if (dueBadge) {
@@ -1069,7 +2961,8 @@ const fetchDocs = useCallback(
               });
             }
             if (row.followup_note) {
-              badges.push({ label: row.followup_note, tone: "muted" });
+              const followUp = (replaceIsoDatesInText(row.followup_note, lang) ?? row.followup_note).replace(/[—]/g, "-");
+              badges.push({ label: followUp, tone: "muted" });
             } else if (!dueBadge && !row.badge_text) {
               badges.push({ label: t("infoOnly"), tone: "muted" });
             }
@@ -1109,7 +3002,53 @@ const fetchDocs = useCallback(
               <tr key={row.id}>
                 <td className="align-top text-left">
                     <div className="flex flex-col gap-2">
-                    <div className="font-medium">{row.title}</div>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="font-medium" style={{ wordBreak: "break-word", paddingRight: "32px" }}>
+                          {displayTitle}
+                        </div>
+                        <button
+                          onClick={() => handlePreview(row)}
+                          className="text-[12px]"
+                          disabled={busyRow === row.id}
+                          aria-label="Preview"
+                          style={{
+                            background: "transparent",
+                            border: "1px solid rgba(0,0,0,0.15)",
+                            borderRadius: "999px",
+                            padding: "6px 8px",
+                            lineHeight: 1,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                            opacity: busyRow === row.id ? 0.6 : 1,
+                            backgroundColor: "rgba(0,0,0,0.02)",
+                          }}
+                        >
+                          <Image src={viewIcon} alt="Preview" width={22} height={22} />
+                        </button>
+                        {row.tags?.length ? (
+                          <div className="flex flex-wrap gap-2">
+                            {row.tags.slice(0, 4).map((tag, idx) => (
+                              <span
+                                key={`${row.id}-tag-top-${idx}`}
+                                style={{
+                                  padding: "6px 10px",
+                                  borderRadius: "999px",
+                                  border: "1px solid rgba(0,0,0,0.2)",
+                                  background: "rgba(0,0,0,0.03)",
+                                  fontSize: "12px",
+                                  lineHeight: 1.1,
+                                }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
                     {row.status === "done" && (
                       <div className="flex flex-wrap items-center gap-2">
                         <div
@@ -1261,41 +3200,27 @@ const fetchDocs = useCallback(
                     ) : gist ? (
                       <>
                         <span>{gist}</span>
-                        {(row.tags?.length || row.reference_ids?.length) ? (
-                          <div className="flex flex-wrap gap-2 text-[11px] text-[rgba(0,0,0,0.6)]">
-                            {row.tags?.slice(0, 4).map((tag, idx) => (
-                              <span
-                                key={`${row.id}-tag-${idx}`}
+	                        {row.tags?.length ? (
+	                          <div className="flex flex-wrap gap-2 text-[11px] text-[rgba(0,0,0,0.6)]">
+	                            {row.tags?.slice(0, 4).map((tag, idx) => (
+	                              <span
+	                                key={`${row.id}-tag-${idx}`}
                                 style={{
                                   padding: "4px 8px",
                                   borderRadius: "999px",
                                   border: "1px solid rgba(0,0,0,0.08)",
                                   background: "rgba(0,0,0,0.02)",
                                 }}
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                            {row.reference_ids?.slice(0, 3).map((rid, idx) => (
-                              <span
-                                key={`${row.id}-ref-${idx}`}
-                                style={{
-                                  padding: "4px 8px",
-                                  borderRadius: "6px",
-                                  border: "1px dashed rgba(0,0,0,0.15)",
-                                  background: "rgba(0,0,0,0.01)",
-                                }}
-                              >
-                                {rid}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                        {buildDetailBullets(row.main_summary || row.summary, row.extra_details, pendingTasks.map((t) => t.title)).length >
-                          0 && (
-                          <>
-                            <button
-                              type="button"
+	                              >
+	                                {tag}
+	                              </span>
+	                            ))}
+	                          </div>
+	                        ) : null}
+	                        {hasDetails && (
+	                          <>
+	                            <button
+	                              type="button"
                               onClick={() =>
                                 setExpandedSummaries((prev) => {
                                   const next = new Set(prev);
@@ -1317,44 +3242,19 @@ const fetchDocs = useCallback(
                             }}
                             aria-expanded={isSummaryExpanded}
                           >
-                            {isSummaryExpanded ? t("hideDetails") : t("showDetails")}
-                            <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
-                              {isSummaryExpanded ? "▴" : "▾"}
-                            </span>
-                            </button>
-                            {isSummaryExpanded && (
-                              <div className="pit-subtitle text-xs" style={{ lineHeight: 1.5, color: "rgba(0,0,0,0.75)" }}>
-                                <ul style={{ paddingLeft: "18px", margin: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
-                                  {buildDetailBullets(row.main_summary || row.summary, row.extra_details, pendingTasks.map((t) => t.title)).map((bullet, idx) => (
-                                    <li key={`${row.id}-bullet-${idx}`} style={{ listStyleType: "disc" }}>
-                                      {bullet}
-                                    </li>
-                                  ))}
-                                  {row.deadlines && row.deadlines.length
-                                    ? row.deadlines.slice(0, 3).map((d, idx) => (
-                                        <li key={`${row.id}-deadline-${idx}`} style={{ listStyleType: "disc" }}>
-                                          {formatDate(d.date_exact ?? null, lang) || d.date_exact || ""} {d.description || ""}
-                                        </li>
-                                      ))
-                                    : null}
-                                  {row.actions_required && row.actions_required.length
-                                    ? row.actions_required.slice(0, 3).map((a, idx) => (
-                                        <li key={`${row.id}-action-${idx}`} style={{ listStyleType: "disc" }}>
-                                          {a.label ||
-                                            t("actionNeededBy", {
-                                              date: formatDate(a.due_date ?? null, lang) ?? "",
-                                            }).trim()}
-                                        </li>
-                                      ))
-                                    : null}
-                                </ul>
-                              </div>
-                            )}
-                          </>
-                        )}
+	                            {isSummaryExpanded ? t("hideDetails") : t("showDetails")}
+	                            <span aria-hidden style={{ fontSize: "12px", lineHeight: 1 }}>
+	                              {isSummaryExpanded ? "▴" : "▾"}
+	                            </span>
+	                            </button>
+	                            {isSummaryExpanded && (
+	                              renderDetailsGroups(row.id, detailsGroups)
+	                            )}
+	                          </>
+	                        )}
                       </>
                     ) : (
-                      "—"
+                      "-"
                     )}
                   </div>
                 </td>
@@ -1386,64 +3286,58 @@ const fetchDocs = useCallback(
                         >
                           <span aria-hidden style={{ fontSize: "16px", lineHeight: 1, fontWeight: 600 }}>+</span>
                         </button>
-                        {opts?.noTasksSection && (row.tasks?.length ?? 0) === 0 && (
-                          <button
-                            type="button"
-                            onClick={() => handleMoveToFiles(row.id)}
-                            className="text-xs"
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              width: 30,
-                              height: 30,
-                              borderRadius: 6,
-                              border: "1.3px solid rgba(0,0,0,0.2)",
-                              background: "rgba(0,0,0,0.03)",
-                              lineHeight: 1,
-                              cursor: "pointer",
-                            }}
-                            aria-label={t("moveToFiles")}
-                            title={t("moveToFiles")}
-                          >
-                            <span aria-hidden style={{ fontSize: "16px", lineHeight: 1, fontWeight: 600 }}>→</span>
-                          </button>
-                        )}
                       </div>
                     </div>
-                    {doneTasks.length > 0 && (
-                      <button
-                        onClick={() =>
-                          setExpandedCompleted((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(row.id)) {
-                              next.delete(row.id);
-                            } else {
-                              next.add(row.id);
-                            }
-                            return next;
-                          })
-                        }
-                        className="text-xs self-start"
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          padding: "2px 4px",
-                          color: "rgba(0,0,0,0.6)",
-                        }}
-                        aria-expanded={expandedCompleted.has(row.id)}
-                      >
-                            <span>{t("completed", { count: doneTasks.length })}</span>
-                        <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
-                          {expandedCompleted.has(row.id) ? "▾" : "▸"}
-                        </span>
-                      </button>
-                    )}
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-semibold" style={{ color: "rgba(0,0,0,0.75)" }}>
+                        {t("actionsHeader")}
+                      </span>
+                      {doneTasks.length > 0 && (
+                        <button
+                          onClick={() =>
+                            setExpandedCompleted((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(row.id)) {
+                                next.delete(row.id);
+                              } else {
+                                next.add(row.id);
+                              }
+                              return next;
+                            })
+                          }
+                          className="text-xs"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            padding: "2px 4px",
+                            color: "rgba(0,0,0,0.6)",
+                          }}
+                          aria-expanded={expandedCompleted.has(row.id)}
+                        >
+                          <span>{t("completed", { count: doneTasks.length })}</span>
+                          <span aria-hidden style={{ fontSize: "14px", lineHeight: 1 }}>
+                            {expandedCompleted.has(row.id) ? "▾" : "▸"}
+                          </span>
+                        </button>
+                      )}
+                    </div>
                     <div className="flex flex-col gap-2">
-                      {isNoTaskRow
-                        ? null
-                        : pendingTasks.map((task) => (
+                      {isNoTaskRow ? (
+                        <span className="text-sm" style={{ color: "rgba(0,0,0,0.55)" }}>
+                          {t("noTasks")}
+                        </span>
+                      ) : (
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "12px",
+                            overflowX: "auto",
+                            paddingBottom: "6px",
+                            scrollbarWidth: "thin",
+                          }}
+                        >
+                          {pendingTasks.map((task) => (
                             <div
                               key={task.id}
                               style={{
@@ -1451,15 +3345,15 @@ const fetchDocs = useCallback(
                                 alignItems: "flex-start",
                                 justifyContent: "space-between",
                                 gap: "8px",
-                                padding: "12px 14px",
-                                border: "1px solid rgba(0,0,0,0.08)",
-                                borderRadius: "12px",
+                                padding: "14px 16px",
+                                border: "1px solid rgba(0,0,0,0.1)",
+                                borderRadius: "16px",
                                 background: flashingComplete.has(task.id)
-                                  ? "rgba(0,200,120,0.05)"
-                                  : "rgba(0,0,0,0.01)",
-                                width: "100%",
-                                minWidth: "260px",
-                                flex: "1 1 auto",
+                                  ? "rgba(0,200,120,0.08)"
+                                  : "rgba(0,0,0,0.02)",
+                                minWidth: "240px",
+                                flex: "0 0 auto",
+                                boxShadow: "0 4px 10px rgba(0,0,0,0.06)",
                               }}
                             >
                               <span className="pit-subtitle text-xs" style={{ lineHeight: 1.4 }}>
@@ -1483,11 +3377,11 @@ const fetchDocs = useCallback(
                                   disabled={busyRow === row.id}
                                   aria-label="Mark done"
                                   style={{
-                                    width: 28,
-                                    height: 28,
-                                    borderRadius: 8,
+                                    width: 32,
+                                    height: 32,
+                                    borderRadius: 10,
                                     background: flashingComplete.has(task.id)
-                                      ? "rgba(0,200,120,0.08)"
+                                      ? "rgba(0,200,120,0.12)"
                                       : "transparent",
                                     border: "1px solid rgba(0,0,0,0.15)",
                                     padding: 4,
@@ -1503,15 +3397,16 @@ const fetchDocs = useCallback(
                                     aria-hidden
                                     style={{
                                       display: "block",
-                                      width: 16,
-                                      height: 16,
-                                      borderRadius: 4,
+                                      width: 18,
+                                      height: 18,
+                                      borderRadius: 5,
                                       border: flashingComplete.has(task.id)
                                         ? "2px solid #00a86b"
                                         : "2px solid #888",
                                       color: "#00a86b",
                                       textAlign: "center",
-                                      lineHeight: "12px",
+                                      lineHeight: "14px",
+                                      fontWeight: 700,
                                     }}
                                   >
                                     {flashingComplete.has(task.id) ? "✓" : ""}
@@ -1520,9 +3415,19 @@ const fetchDocs = useCallback(
                               </div>
                             </div>
                           ))}
+                        </div>
+                      )}
                     </div>
                     {doneTasks.length > 0 && expandedCompleted.has(row.id) && (
-                      <div className="flex flex-col gap-2">
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "12px",
+                          overflowX: "auto",
+                          paddingBottom: "6px",
+                          scrollbarWidth: "thin",
+                        }}
+                      >
                         {doneTasks.map((task) => (
                           <div
                             key={task.id}
@@ -1537,9 +3442,8 @@ const fetchDocs = useCallback(
                               background: recentlyDone.has(task.id)
                                 ? "rgba(0,200,120,0.08)"
                                 : "rgba(0,0,0,0.02)",
-                              width: "100%",
-                              minWidth: "260px",
-                              flex: "1 1 auto",
+                              minWidth: "240px",
+                              flex: "0 0 auto",
                             }}
                           >
                             <span
@@ -1577,6 +3481,90 @@ const fetchDocs = useCallback(
                         ))}
                       </div>
                     )}
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2" />
+                      <div className="flex items-center gap-4">
+                        {(opts?.noTasksSection || pendingTasks.length === 0) && (
+                          <button
+                            type="button"
+                            onClick={() => handleMoveToFiles(row.id)}
+                            className="text-[12px]"
+                            aria-label={t("moveToFiles")}
+                            title={t("moveToFiles")}
+                            style={{
+                              background: "transparent",
+                              border: "1px solid rgba(0,0,0,0.2)",
+                              borderRadius: 10,
+                              padding: "8px 10px",
+                              lineHeight: 1,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              cursor: "pointer",
+                              opacity: busyRow === row.id ? 0.6 : 1,
+                              backgroundColor: "rgba(0,0,0,0.02)",
+                            }}
+                          >
+                            <span aria-hidden style={{ fontSize: "16px", lineHeight: 1, fontWeight: 700 }}>→</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => openChat(row)}
+                          className="text-[12px]"
+                          disabled={busyRow === row.id}
+                          aria-label="Deep dive chat"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            lineHeight: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            cursor: "pointer",
+                            opacity: busyRow === row.id ? 0.6 : 1,
+                          }}
+                        >
+                          <Image src={deepDiveIcon} alt="Deep Dive" width={24} height={24} />
+                        </button>
+                        <button
+                          onClick={() => handlePreview(row)}
+                          className="text-[12px]"
+                          disabled={busyRow === row.id}
+                          aria-label="Preview"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            lineHeight: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            cursor: "pointer",
+                            opacity: busyRow === row.id ? 0.6 : 1,
+                          }}
+                        >
+                          <Image src={viewIcon} alt="Preview" width={28} height={28} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(row)}
+                          className="text-[12px]"
+                          disabled={busyRow === row.id}
+                          aria-label="Delete"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            padding: 0,
+                            lineHeight: 1,
+                            display: "flex",
+                            alignItems: "center",
+                            cursor: "pointer",
+                            opacity: busyRow === row.id ? 0.6 : 1,
+                          }}
+                        >
+                          <Image src={binIcon} alt="Delete" width={22} height={22} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </td>
               </tr>
@@ -1785,6 +3773,9 @@ const fetchDocs = useCallback(
           ? data.messages.filter((m: any) => m?.role && m?.content).map((m: any) => ({ role: m.role, content: m.content }))
           : []
       );
+      if (data.createdTask && chatForDoc) {
+        fetchDocs(false);
+      }
     } catch (err) {
       console.error(err);
       setChatError(err instanceof Error ? err.message : "Failed to send message");
@@ -1803,7 +3794,7 @@ const fetchDocs = useCallback(
         .createSignedUrl(row.storage_path, 60 * 10);
       if (error || !signed?.signedUrl) throw error;
       setPreviewUrl(signed.signedUrl);
-      setPreviewName(row.title);
+      setPreviewName(replaceIsoDatesInText(row.title, lang) ?? row.title);
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to load preview");
@@ -2015,57 +4006,200 @@ const fetchDocs = useCallback(
     persistHidden(next);
   };
 
+  const handleCancelProcessing = async (row: TableRow) => {
+    setBusyRow(row.id);
+    try {
+      // Optimistic-only row: just drop it.
+      if (!row.id || row.id.startsWith("temp-") || row.id.length < 8 || row.status !== "done" && !row.storage_path) {
+        setRows((prev) => prev.filter((r) => r.id !== row.id));
+        setOptimisticRows((prev) => prev.filter((r) => r.id !== row.id));
+        return;
+      }
+      const supabase = supabaseBrowser();
+      // Attempt to delete storage file first (best-effort).
+      if (row.storage_path) {
+        await supabase.storage.from("documents").remove([row.storage_path]).catch(() => null);
+      }
+      await supabase.from("documents").delete().eq("id", row.id);
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      setOptimisticRows((prev) => prev.filter((r) => r.id !== row.id));
+    } catch (err) {
+      console.error("cancel processing failed", err);
+      alert(err instanceof Error ? err.message : "Abbruch fehlgeschlagen");
+    } finally {
+      setBusyRow(null);
+    }
+  };
+
   return (
     <div className="w-full">
       {isHome ? (
         <div className="flex flex-col gap-4">
-              <div className="pit-subcard flex flex-col gap-3 w-full">
-                <div className="flex items-center justify-between">
-                  <h3 className="pit-title" style={{ fontSize: "18px" }}>
-                {t("needsAttentionTitle")}
-                  </h3>
-                </div>
-                <p className="pit-subtitle text-xs" style={{ color: "rgba(0,0,0,0.65)" }}>
-              {t("needsAttentionSubtitle")}
-                </p>
-                <div className="w-full overflow-x-auto">
-              {renderTable(openRows, { emptyMessage: t("noDocsOpen") })}
-                </div>
-              </div>
-              <div className="pit-subcard flex flex-col gap-3 w-full">
-                <div className="flex items-center justify-between">
-                  <h3 className="pit-title" style={{ fontSize: "18px" }}>
-                {t("readyTitle")}
-                  </h3>
-                </div>
-                <div className="w-full overflow-x-auto">
-                  {renderTable(readyRows, {
-                    noTasksSection: true,
-                    emptyMessage: t("noDocsReady"),
-                  })}
-                </div>
-              </div>
+          {processingRows.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <h3
+                className="pit-title"
+                style={{ fontSize: "18px", fontFamily: "Georgia, serif" }}
+              >
+                {t("processingTitle") || "In Bearbeitung"}
+              </h3>
+              {renderCards(processingRows, { emptyMessage: t("noDocsProcessing") ?? "" })}
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-2">
+            <h3
+              className="pit-title"
+              style={{ fontSize: "18px", fontFamily: "Georgia, serif" }}
+            >
+              {t("needsAttentionTitle")}
+            </h3>
+            {renderCards(openRows, { emptyMessage: t("noDocsOpen") })}
+          </div>
+          <div className="flex flex-col gap-2">
+            <h3
+              className="pit-title"
+              style={{ fontSize: "18px", fontFamily: "Georgia, serif" }}
+            >
+              {t("readyTitle")}
+            </h3>
+            {renderCards(readyRows, {
+              noTasksSection: true,
+              emptyMessage: t("noDocsReady"),
+            })}
+          </div>
         </div>
       ) : (
-        <div className="w-full overflow-x-auto">{renderTable(visibleRows)}</div>
+        <div className="w-full">{renderCards(visibleRows)}</div>
       )}
-      {previewUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div className="pit-card max-w-4xl w-[90vw] h-[80vh] relative">
-            <div className="flex items-center justify-between mb-3">
-              <p className="pit-title" style={{ fontSize: "18px" }}>
-                Preview: {previewName}
-              </p>
-              <button
-                onClick={() => {
-                  setPreviewUrl(undefined);
-                  setPreviewName(null);
+      {actionMenuRow && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
+          onClick={() => setActionMenuRow(null)}
+        >
+          <div
+            className="rounded-2xl border border-[rgba(0,0,0,0.18)] bg-[rgba(247,243,236,0.97)] shadow-2xl w-full max-w-lg"
+            style={{ maxHeight: "88vh" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-center py-5">
+              <span
+                style={{
+                  width: "56px",
+                  height: "5px",
+                  borderRadius: "999px",
+                  background: "rgba(0,0,0,0.2)",
+                  display: "inline-block",
                 }}
-                className="pit-cta pit-cta--secondary text-xs"
+              />
+            </div>
+            <div className="flex flex-col divide-y divide-[rgba(0,0,0,0.14)]">
+              <button
+                type="button"
+                onClick={() => {
+                  openAddTask(actionMenuRow);
+                  setActionMenuRow(null);
+                }}
+                className="flex items-center gap-4 px-7 py-4 text-left"
+                style={{ background: "transparent", border: "none", cursor: "pointer" }}
               >
-                Close
+                <span
+                  style={{
+                    fontSize: "26px",
+                    minWidth: "30px",
+                    textAlign: "center",
+                    display: "inline-flex",
+                    justifyContent: "center",
+                  }}
+                >
+                  +
+                </span>
+                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                  {t("addTask")}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  openChat(actionMenuRow);
+                  setActionMenuRow(null);
+                }}
+                className="flex items-center gap-4 px-7 py-4 text-left"
+                style={{ background: "transparent", border: "none", cursor: "pointer" }}
+              >
+                <Image src={starAiIcon} alt="Chat" width={28} height={28} style={{ minWidth: "30px" }} />
+                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                  {t("explainDocument") || "Explain this document"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handlePreview(actionMenuRow);
+                  setActionMenuRow(null);
+                }}
+                className="flex items-center gap-4 px-7 py-4 text-left"
+                style={{ background: "transparent", border: "none", cursor: "pointer" }}
+              >
+                <Image src={viewIcon} alt="Open original" width={28} height={28} style={{ minWidth: "30px" }} />
+                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                  {t("openOriginalDocument") || "Open original document"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDelete(actionMenuRow);
+                  setActionMenuRow(null);
+                }}
+                className="flex items-center justify-end gap-3 px-7 py-8 text-left"
+                style={{ background: "transparent", border: "none", cursor: "pointer", color: "#d6453d" }}
+              >
+                <span style={{ fontSize: "17px", color: "#d6453d", lineHeight: 1.4 }}>{t("delete")}</span>
+                <Image
+                  src={binIcon}
+                  alt="Delete"
+                  width={20}
+                  height={20}
+                  style={{
+                    minWidth: "24px",
+                    display: "inline-flex",
+                    filter:
+                      "invert(38%) sepia(71%) saturate(2532%) hue-rotate(341deg) brightness(92%) contrast(92%)",
+                    opacity: 0.5,
+                  }}
+                />
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {previewUrl && (
+        <div
+          className="fixed inset-0 z-[999] flex items-center justify-center"
+          style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
+          onClick={() => {
+            setPreviewUrl(undefined);
+            setPreviewName(null);
+          }}
+        >
+          <div
+            className="pit-card max-w-4xl w-[90vw] h-[80vh] relative border border-[rgba(0,0,0,0.12)] bg-[rgba(247,243,236,0.96)]"
+            style={{ transform: "translateY(-4%)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-center py-2">
+              <span
+                style={{
+                  width: "56px",
+                  height: "5px",
+                  borderRadius: "999px",
+                  background: "rgba(0,0,0,0.2)",
+                  display: "inline-block",
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between mb-3" />
             <div className="h-[calc(100%-48px)]">
               <iframe
                 src={previewUrl}
@@ -2079,25 +4213,31 @@ const fetchDocs = useCallback(
       {isMounted && taskModal
         ? createPortal(
             <div
-              className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50 p-4"
+              className="fixed inset-0 z-[999] flex items-center justify-center p-4"
+              style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
               onClick={() => setTaskModal(null)}
             >
               <div
-                className="pit-card w-full max-w-md"
+                className="pit-card w-full max-w-md border border-[rgba(0,0,0,0.12)] bg-[rgba(247,243,236,0.96)]"
                 onClick={(e) => {
                   e.stopPropagation();
                 }}
               >
+                <div className="flex items-center justify-center py-2">
+                  <span
+                    style={{
+                      width: "56px",
+                      height: "5px",
+                      borderRadius: "999px",
+                      background: "rgba(0,0,0,0.2)",
+                      display: "inline-block",
+                    }}
+                  />
+                </div>
                 <div className="flex items-center justify-between mb-4">
                   <p className="pit-title" style={{ fontSize: "18px" }}>
                     New task
                   </p>
-                  <button
-                    onClick={() => setTaskModal(null)}
-                    className="pit-cta pit-cta--secondary text-xs"
-                  >
-                    Cancel
-                  </button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <label className="flex flex-col gap-1">
@@ -2132,12 +4272,9 @@ const fetchDocs = useCallback(
                   </label>
                   <div className="flex justify-end gap-2 pt-2">
                     <button
-                      onClick={() => setTaskModal(null)}
-                      className="pit-cta pit-cta--secondary text-xs"
+                      onClick={submitTask}
+                      style={kindleButtonStyle}
                     >
-                      {t("cancel")}
-                    </button>
-                    <button onClick={submitTask} className="pit-cta pit-cta--primary text-xs">
                       {t("addTask")}
                     </button>
                   </div>
@@ -2147,10 +4284,11 @@ const fetchDocs = useCallback(
             document.body
           )
         : null}
-      {isMounted && chatForDoc
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50 p-4"
+            {isMounted && chatForDoc
+              ? createPortal(
+                  <div
+              className="fixed inset-0 z-[999] flex items-start justify-center p-4 pt-4 md:pt-8"
+              style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
               onClick={() => {
                 if (!chatLoading) {
                   setChatForDoc(null);
@@ -2160,27 +4298,22 @@ const fetchDocs = useCallback(
               }}
             >
               <div
-                className="pit-card w-full max-w-2xl max-h-[90vh] flex flex-col"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <p className="pit-title" style={{ fontSize: "18px" }}>
-                    {uiText.title[lang] || uiText.title.en}
-                  </p>
-                  <button
-                    onClick={() => {
-                      if (!chatLoading) {
-                        setChatForDoc(null);
-                        setChatThreadId(null);
-                        setChatMessages([]);
-                      }
+              className="pit-card w-full max-w-2xl max-h-[96vh] min-h-[78vh] flex flex-col border border-[rgba(0,0,0,0.12)] bg-[rgba(247,243,236,0.96)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-center py-2">
+                <span
+                  style={{
+                    width: "56px",
+                    height: "5px",
+                    borderRadius: "999px",
+                      background: "rgba(0,0,0,0.2)",
+                      display: "inline-block",
                     }}
-                    className="pit-cta pit-cta--secondary text-xs"
-                  >
-                    {uiText.close[lang] || uiText.close.en}
-                  </button>
+                  />
                 </div>
-                <div className="flex-1 overflow-y-auto border border-[rgba(0,0,0,0.06)] rounded-md p-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between mb-3" />
+                <div className="flex-1 overflow-y-auto flex flex-col gap-2 px-1 pb-1">
                   {chatLoading && chatMessages.length === 0 ? (
                     <p className="pit-muted text-sm">{uiText.loading[lang] || uiText.loading.en}</p>
                   ) : chatMessages.length === 0 ? (
@@ -2199,22 +4332,44 @@ const fetchDocs = useCallback(
                   )}
                   {chatError && <p className="pit-error text-xs">{chatError}</p>}
                 </div>
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3 relative w-full">
                   <textarea
                     className="pit-input"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder={uiText.placeholder[lang] || uiText.placeholder.en}
-                    rows={2}
-                    style={{ resize: "vertical", minHeight: 60 }}
+                    rows={5}
+                    style={{
+                      resize: "none",
+                      minHeight: 170,
+                      maxHeight: 170,
+                      overflowY: "auto",
+                      paddingBottom: "48px",
+                      paddingRight: "48px",
+                    }}
                   />
                   <button
                     onClick={sendChat}
                     disabled={chatLoading || !chatInput.trim()}
-                    className="pit-cta pit-cta--primary text-xs"
-                    style={{ height: "fit-content" }}
+                    style={{
+                      ...kindleButtonStyle,
+                      height: 32,
+                      width: 32,
+                      padding: 0,
+                      borderRadius: "50%",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      position: "absolute",
+                      right: 8,
+                      bottom: 8,
+                      opacity: chatLoading || !chatInput.trim() ? 0.6 : 1,
+                      cursor: chatLoading || !chatInput.trim() ? "not-allowed" : "pointer",
+                      letterSpacing: 0,
+                    }}
+                    aria-label={t("send") || "Send"}
                   >
-                    {uiText.send[lang] || uiText.send.en}
+                    <span style={{ fontSize: "15px", lineHeight: 1 }}>↑</span>
                   </button>
                 </div>
               </div>
