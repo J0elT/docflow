@@ -19,7 +19,7 @@ const bangers = Bangers({
 });
 
 export const metadata: Metadata = {
-  title: "DocFlow",
+  title: "Orderly",
   description: "Upload, process, and summarize your documents.",
 };
 

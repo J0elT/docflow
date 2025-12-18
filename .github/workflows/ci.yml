@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -19,11 +21,31 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install
-        run: npm ci
+      - name: Detect skip-plan label
+        if: github.event_name == 'pull_request'
+        id: prmeta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = (context.payload.pull_request.labels || []).map((l) => l.name);
+            core.setOutput("skip_plan", labels.includes("skip-plan") ? "true" : "false");
+
+      - name: Require Plan.md update (or skip-plan)
+        if: github.event_name == 'pull_request' && steps.prmeta.outputs.skip_plan != 'true'
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          echo "$changed"
+          if ! echo "$changed" | grep -q "^Plan.md$"; then
+            echo "::error::Plan.md must be updated for every PR (append a run entry with tests + gate). Add label 'skip-plan' to override for trivial changes."
+            exit 1
+          fi
 
       - name: Check playbook artifacts
         run: npm run check:playbook
+
+      - name: Install
+        run: npm ci
 
       - name: Lint
         run: npm run lint

@@ -3,16 +3,48 @@
 ## Purpose
 Make the PRD real through a repeatable, auditable loop that avoids scope drift and keeps the app calm, clear, and trustworthy.
 
+## Manual mode vs optional orchestrator
+This repo runs the playbook **manually**:
+- Humans drive SURVEY → PLAN → EXECUTE → TEST → GATE with normal dev commands and copy/paste prompts.
+- There is **no orchestrator** to install or assume exists.
+
 ## Sources of Truth (SoT)
 - PRD: `PRD.Next.md` (features, success signals).
+- Task list (backlog): `tasks/tasks-*.md` (atomic checkboxes).
+- Plan log: `Plan.md` (append-only run log with evidence).
+- Decision journal: `DECISIONS.md` (append-only constraints/tradeoffs).
+- Prompts registry: `prompts.md` (what prompts are “in force”).
+- Product prompt/specs: `v2docflowprompt.md` (DocFlow-specific LLM behavior).
 - Design guardrails: existing cards/typography/colors in `globals.css`, `DocumentTable`, `UploadForm`.
 - Data model: Supabase schema for users/documents/categories/tasks; storage bucket rules.
-- Prompt/specs: `v2docflowprompt.md` (LLM behavior) once stable; decision log (see below).
-- Playbook: `playbook_v2` schemas/prompts (local copy under `~/Downloads/vibe_coding_playbook_v2_orchestrator/playbook_v2`). We are using the schemas/prompts manually; the orchestrator was removed.
+- Playbook: `playbook_v2/` (schemas/modes/logging/evals). We use this **manually**.
+- PRD + tasks prompts: `ai-dev-tasks-main/` (`create-prd.md`, `generate-tasks.md`).
 - SoT readiness: if SoT is missing, create it before execution:
-  - PRD: author via `~/Downloads/ai-dev-tasks-main/create-prd.md`.
-  - Tasks/plan: generate via `~/Downloads/ai-dev-tasks-main/generate-tasks.md` and capture as `PlanStep[]`/`TestSpec[]` in Plan.md.
-  - Prompts/decisions stubs: add `prompts.md` and `DECISIONS.md` entries; do not proceed without these anchors.
+  - PRD: draft/update via `ai-dev-tasks-main/create-prd.md`.
+  - Tasks: generate via `ai-dev-tasks-main/generate-tasks.md`, save to `tasks/tasks-*.md`.
+  - Plan: copy a single atomic task into `Plan.md` with `PlanStep[]` / `TestSpec[]` / `GateReport`.
+  - Prompts/decisions: update `prompts.md` and append to `DECISIONS.md` when choices become sticky.
+
+## Non-negotiable behavior rules
+1) **Do not invent unseen code**
+- If a file/section is not provided, it is unknown.
+- Ask for context or make a minimal change that doesn’t depend on guessing.
+
+2) **Tests are the source of truth**
+- “Done” requires evidence: test output and/or explicit manual checks.
+- Never claim tests pass without capturing raw output in `Plan.md` (or a log file referenced from it).
+
+3) **Atomic progress**
+- One backlog item / one clear slice per run.
+- Prefer many small, test-tied commits over one giant speculative rewrite.
+
+4) **Risks must be explicit**
+- Unknowns, assumptions, and risks go in `gate.risks` (do not bury them in prose).
+- If risks are material, set `GateReport.overallStatus = "needs_review"` (or `"fail"`) and/or trigger JUDGE.
+
+5) **Schema discipline**
+- When a mode prompt asks for JSON, return **JSON only** (no markdown, no code fences).
+- If the model drifts: “Return ONLY valid JSON for <SchemaName>.”
 
 ## Playbook v2 alignment (manual, no orchestrator)
 - Keep the SURVEY→PLAN→EXECUTE→TEST→GATE loop manual, but shape artifacts to `playbook_v2/schemas.md`:
@@ -22,7 +54,7 @@ Make the PRD real through a repeatable, auditable loop that avoids scope drift a
   - `TestSpec[]` for what we ran or intend to run.
   - `GateReport` for self-check (overallStatus, risks, tests, notes).
 - Context discipline (SURVEY): always pull PRD.Next.md, `globals.css` (and shared components), Supabase schema, `v2docflowprompt.md`, `DECISIONS.md`, and any target files. Keep snippets bounded; do not invent unseen code.
-- Logging (optional but preferred): manual NDJSON entries per `playbook_v2/telemetry_and_logs.md`; use `evals_and_judges.md` as a self-judge rubric when helpful.
+- Logging (optional but preferred): manual NDJSON entries per `playbook_v2/telemetry_and_logs.md`; use `playbook_v2/evals_and_judges.md` as a self-judge rubric when helpful.
 - Not using: the `orchestrator` CLI; all steps are human-driven with the same guardrails.
 
 ## Work Loop (per change)
@@ -58,19 +90,19 @@ Make the PRD real through a repeatable, auditable loop that avoids scope drift a
 - OCR quality (photos), deadline extraction accuracy, multilingual consistency, Supabase auth/storage rules, latency/timeouts on OCR/LLM.
 
 ## Observability
-- Log extraction/LLM errors, durations, and user-facing failure states; track success signals: repeat uploads, return usage, clarity/anxiety feedback. Prefer NDJSON per `telemetry_and_logs.md` (manual entry if no automation).
+- Log extraction/LLM errors, durations, and user-facing failure states; track success signals: repeat uploads, return usage, clarity/anxiety feedback. Prefer NDJSON per `playbook_v2/telemetry_and_logs.md` (manual entry if no automation).
 
 ## Prompts
 - Use `v2docflowprompt.md` plus the mode prompts in `playbook_v2/modes/` for SURVEY→PLAN→EXECUTE→TEST→GATE grounding. Keep `prompts.md` updated with the active prompt set and why it is in scope for a task; consult `prompts.md` during SURVEY.
 - Prefer schema-first LLM outputs and validate before use (e.g., extraction JSON shape, playbook_v2 schemas). If validation fails, surface/log and handle gracefully instead of guessing.
 
 ## How to run a task (manual loop with playbook v2)
-1) **Prep SoT**: Ensure PRD.Next.md, globals.css/shared UI, Supabase schema, v2docflowprompt.md, DECISIONS.md, prompts.md, and target files exist/are current. If missing: create PRD via `~/Downloads/ai-dev-tasks-main/create-prd.md`; generate tasks via `~/Downloads/ai-dev-tasks-main/generate-tasks.md`; stub DECISIONS/prompts.
+1) **Prep SoT**: Ensure `PRD.Next.md`, `tasks/tasks-*.md`, `globals.css`/shared UI, Supabase schema, `v2docflowprompt.md`, `DECISIONS.md`, `prompts.md`, and target files exist/are current. If missing: create/update PRD via `ai-dev-tasks-main/create-prd.md`; generate tasks via `ai-dev-tasks-main/generate-tasks.md`; stub tasks/Plan/Decisions/Prompts.
 2) **Capture the task**: Use the template `Mode/Title/Description/Acceptance/[Target files]/[Tests]` (modes: FEATURE, BUGFIX, AI_FEATURE, ARCHITECT, JUDGE). Record in Plan.md as a Task entry and select the corresponding mode prompt from `playbook_v2/modes/`.
 3) **SURVEY**: Read SoT + target files + prompts.md; use the selected mode prompt for grounding. Keep snippets bounded; do not invent unseen code.
 4) **PLAN**: Add `PlanStep[]` to Plan.md (kind/description/targetFiles/done). Note intended `CodeChange[]` and `TestSpec[]`.
 5) **EXECUTE**: Implement changes; keep WIP small. Capture notable diffs as `CodeChange` summaries.
-6) **TEST**: Run agreed automated tests and the fixed manual letter set; log results as `TestSpec` executed.
+6) **TEST**: Run agreed automated tests and the fixed manual letter set; paste raw output into `Plan.md` (or a referenced log) as `TestSpec` evidence.
 7) **GATE**: Write a `GateReport` (overallStatus, risks, tests run/planned, manual checks, notes). Ensure DoD/product gates are met.
 8) **DECISIONS**: Append key choices/rationales to DECISIONS.md.
 9) **Log (optional)**: NDJSON entry per `playbook_v2/telemetry_and_logs.md`; optional self-judge via `playbook_v2/evals_and_judges.md`.

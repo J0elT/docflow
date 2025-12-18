@@ -2191,7 +2191,26 @@ export async function POST(request: Request) {
       user_id: doc.user_id,
       content: parsedJson,
     });
-    if (insertError) throw insertError;
+    if (insertError) {
+      const code = (insertError as { code?: string }).code;
+      const constraint = (insertError as { constraint?: string }).constraint;
+      // If the document was deleted while processing (FK fails), skip gracefully instead of 500.
+      if (code === "23503" && constraint === "extractions_document_id_fkey") {
+        console.warn("extraction skipped; document missing during processing", { documentId: doc.id });
+        await logTelemetryEvent({
+          timestamp: new Date().toISOString(),
+          kind: "process-document",
+          status: "skipped",
+          documentId: doc.id,
+          userId: doc.user_id,
+          model: extractionSource,
+          usedOcrFallback: usedPdfOcrFallback,
+          message: "document missing during extraction insert",
+        });
+        return NextResponse.json({ ok: false, reason: "document_missing" }, { status: 410 });
+      }
+      throw insertError;
+    }
 
     // Attempt to rename stored file (any type) to match friendly title
     if (doc.storage_path && friendlyTitle) {

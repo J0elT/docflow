@@ -11,9 +11,20 @@
   --pit-border: #c6c1b6;
   --pit-radius: 18px;
   --pit-radius-lg: 24px;
+  --pit-radius-sm: 8px;
+  --pit-radius-md: 12px;
+  --pit-radius-xl: 24px;
   --pit-gap: clamp(16px, 2vw, 24px);
   --pit-card-padding: clamp(16px, 3vw, 28px);
-  --pit-max-width: 1080px;
+  --pit-max-width: 960px;
+  --pit-reading-max: 720px;
+  --pit-page-padding: clamp(16px, 3vw, 24px);
+  --pit-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --pit-ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --pit-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --pit-shadow-1: 0 8px 18px rgba(0, 0, 0, 0.08);
+  --pit-shadow-2: 0 16px 32px rgba(0, 0, 0, 0.12);
+  --pit-shadow-3: 0 22px 48px rgba(0, 0, 0, 0.16);
   --pit-cta-font: var(--font-bangers), var(--font-geist-sans), system-ui,
     -apple-system, "Segoe UI", sans-serif;
   --pit-body-font: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI",
@@ -49,8 +60,8 @@ a {
 
 .pit-page {
   min-height: 100vh;
-  padding: calc(env(safe-area-inset-top, 0px) + 32px) clamp(16px, 4vw, 32px)
-    calc(env(safe-area-inset-bottom, 0px) + 120px);
+  padding: calc(env(safe-area-inset-top, 0px) + 24px) var(--pit-page-padding)
+    calc(env(safe-area-inset-bottom, 0px) + 32px);
   background: inherit;
 }
 
@@ -60,6 +71,34 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--pit-gap);
+}
+
+.pit-reading {
+  max-width: var(--pit-reading-max);
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pit-radius-sm {
+  border-radius: var(--pit-radius-sm);
+}
+.pit-radius-md {
+  border-radius: var(--pit-radius-md);
+}
+.pit-radius-lg {
+  border-radius: var(--pit-radius-lg);
+}
+.pit-radius-xl {
+  border-radius: var(--pit-radius-xl);
+}
+.pit-shadow-1 {
+  box-shadow: var(--pit-shadow-1);
+}
+.pit-shadow-2 {
+  box-shadow: var(--pit-shadow-2);
+}
+.pit-shadow-3 {
+  box-shadow: var(--pit-shadow-3);
 }
 
 .pit-card {

@@ -35,6 +35,673 @@ If you’re using the optional reliability layer (`playbook_v2/domain_memory.md`
 }
 ```
 
+## 2025-12-18 — BUGFIX: Prevent Galaxy chat duplication + tighten assistant chat RLS/constraints
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-bugfix-galaxy-chat-duplication-sql-rls",
+  "mode": "BUGFIX",
+  "title": "Prevent Galaxy chat duplication and tighten SQL policies",
+  "description": "Fix Galaxy assistant persistence so only new user turns are sent to the server (avoid duplicating stored history). Tighten assistant chat SQL with uniqueness constraints and RLS policies that prevent cross-session injection.",
+  "acceptanceCriteria": [
+    "Files assistant no longer duplicates prior messages on each send; server persists a clean history.",
+    "assistant_sessions enforces one Galaxy session per user and one Clarity session per (user, doc).",
+    "assistant_messages RLS requires session ownership (cannot insert into another user’s session).",
+    "Unit tests and Next.js build pass."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "targetFiles": [
+      "src/components/FilesAssistantPanel.tsx",
+      "src/app/api/files-agent/route.ts",
+      "supabase/sql/2025-12-18-assistant-chat.sql",
+      "Plan.md"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Ensure client sends only the new user message; server loads stored history and appends new turns.",
+    "kind": "code",
+    "targetFiles": ["src/components/FilesAssistantPanel.tsx", "src/app/api/files-agent/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "description": "Harden SQL: uniqueness constraints and RLS policies tying messages to owned sessions and docs.",
+    "kind": "code",
+    "targetFiles": ["supabase/sql/2025-12-18-assistant-chat.sql"],
+    "done": true,
+    "notes": "Re-run the SQL in Supabase SQL editor to apply updated policies/indexes if already executed once."
+  },
+  {
+    "id": "step-3",
+    "description": "Run unit tests and Next build.",
+    "kind": "test",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/components/FilesAssistantPanel.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Sent the full local message list on every request, causing duplication when server also loads stored history.",
+    "afterSnippet": "Send only the new user message; UI still renders full history using server-returned persisted messages.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/api/files-agent/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Accepted user+assistant messages from client, enabling duplication and history injection.",
+    "afterSnippet": "Accept only user messages from client; server owns assistant messages and session history.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "supabase/sql/2025-12-18-assistant-chat.sql",
+    "changeType": "modify",
+    "beforeSnippet": "RLS checked only assistant_messages.user_id and did not guarantee the session belonged to the same user; sessions could reference other users’ docs.",
+    "afterSnippet": "Adds partial unique indexes (Galaxy per user; Clarity per user+doc), check constraints, and RLS policies that enforce document/session ownership and prevent cross-session injection.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Paste raw output below."
+  },
+  {
+    "id": "next-build",
+    "description": "Compile production build (TypeScript).",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Paste raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 1ms
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 4ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 6ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 10ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 28ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  14:22:24
+   Duration  342ms (transform 329ms, setup 0ms, import 485ms, tests 54ms, environment 1ms)
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1697.9ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/16) ...
+   Generating static pages using 9 workers (4/16)
+   Generating static pages using 9 workers (8/16)
+   Generating static pages using 9 workers (12/16)
+ ✓ Generating static pages using 9 workers (16/16) in 281.3ms
+   Finalizing page optimization ...
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Galaxy chat persistence no longer duplicates history; SQL constraints and RLS policies are tightened to better enforce session/document ownership. Tests and build pass.",
+  "risks": [
+    "If the SQL file was already applied once, the updated policy/index changes require re-running it in the Supabase SQL editor (drop/recreate is included).",
+    "Token estimation is heuristic (chars/4); verify the rolling window feels right in real use."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": [
+      "Send multiple Galaxy messages and refresh; ensure messages aren’t duplicated across turns.",
+      "If you applied the SQL previously, re-run it and confirm the unique indexes/policies are present in Supabase."
+    ]
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-18 — BUGFIX: Bundle download links persist and work (no signed URL stored)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-bugfix-bundle-download-link",
+  "mode": "BUGFIX",
+  "title": "Make bundle download links work without storing signed URLs",
+  "description": "Fix Galaxy bundle exports so the user gets a stable internal download link (short label in UI) while keeping Supabase signed URLs out of persisted chat. Also ensure URL redaction does not break markdown syntax when links are sanitized.",
+  "acceptanceCriteria": [
+    "bundle_export uploads the zip to a user-scoped storage path that matches existing storage policies.",
+    "Galaxy replies include a stable internal link that stays clickable in persisted chat history.",
+    "Sanitizing Supabase signed URLs no longer removes trailing parentheses/punctuation (markdown stays well-formed).",
+    "Unit tests and Next.js build pass."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "targetFiles": [
+      "src/app/api/files-agent/route.ts",
+      "src/app/bundles/download/page.tsx",
+      "src/components/FilesAssistantPanel.tsx",
+      "src/app/api/bundles/download/route.ts",
+      "src/app/api/doc-chat/route.ts",
+      "Plan.md"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Store bundle zips under a user-prefixed path and return a stable internal download URL.",
+    "kind": "code",
+    "targetFiles": ["src/app/api/files-agent/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "description": "Add a /bundles/download page that generates a signed URL client-side and redirects to start the download.",
+    "kind": "code",
+    "targetFiles": ["src/app/bundles/download/page.tsx"],
+    "done": true,
+    "notes": "Wrapped useSearchParams in Suspense to satisfy Next build prerender rules."
+  },
+  {
+    "id": "step-3",
+    "description": "Fix Supabase URL redaction to preserve markdown punctuation.",
+    "kind": "code",
+    "targetFiles": ["src/app/api/files-agent/route.ts", "src/app/api/doc-chat/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-4",
+    "description": "Run unit tests and production build.",
+    "kind": "test",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/files-agent/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Uploaded bundles outside the user-id prefix and returned a server /api link; Supabase signed URL redaction could break markdown by swallowing closing ')'.",
+    "afterSnippet": "Uploads bundles to `${userId}/bundles/<name>.zip` (matches storage policy prefix), returns a stable `/bundles/download?name=...` link, and redaction preserves trailing punctuation so markdown stays valid.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/bundles/download/page.tsx",
+    "changeType": "add",
+    "beforeSnippet": null,
+    "afterSnippet": "Client page that reads `name` and uses supabase-js to create a signed URL for `${userId}/bundles/${name}` then redirects to start the download.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/FilesAssistantPanel.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Plain-link detection only linkified `/api/...` internal paths.",
+    "afterSnippet": "Plain-link detection now linkifies both `/api/...` and `/bundles/...` paths so internal download links stay clickable even when not markdown-formatted.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/api/bundles/download/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Signed URL generator assumed bundles live under `bundles/${userId}/...`.",
+    "afterSnippet": "Signed URL generator now targets `${userId}/bundles/...` (aligns with updated bundle storage path).",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/api/doc-chat/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Supabase signed URL redaction could swallow trailing ')', breaking markdown links.",
+    "afterSnippet": "Redaction preserves trailing punctuation so markdown remains well-formed.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit test suite.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Captured raw output below."
+  },
+  {
+    "id": "next-build",
+    "description": "Build production app (compile + typecheck + prerender).",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Captured raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 3ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 9ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 12ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 28ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  14:54:40
+   Duration  343ms (transform 464ms, setup 0ms, import 670ms, tests 62ms, environment 1ms)
+
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 2.1s
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18) 
+   Generating static pages using 9 workers (8/18) 
+   Generating static pages using 9 workers (13/18) 
+ ✓ Generating static pages using 9 workers (18/18) in 318.8ms
+   Finalizing page optimization ...
+```
+
+Additional rerun after final prompt tweak:
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 9ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 9ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 27ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  15:00:39
+   Duration  342ms (transform 396ms, setup 0ms, import 605ms, tests 56ms, environment 1ms)
+
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1788.6ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18) 
+   Generating static pages using 9 workers (8/18) 
+   Generating static pages using 9 workers (13/18) 
+ ✓ Generating static pages using 9 workers (18/18) in 305.0ms
+   Finalizing page optimization ...
+```
+
+Additional rerun after linkify normalization for legacy “[link removed]” markdown:
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 5ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 8ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 25ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 4ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  15:02:43
+   Duration  257ms (transform 302ms, setup 0ms, import 484ms, tests 49ms, environment 1ms)
+
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1830.9ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18) 
+   Generating static pages using 9 workers (8/18) 
+   Generating static pages using 9 workers (13/18) 
+ ✓ Generating static pages using 9 workers (18/18) in 300.3ms
+   Finalizing page optimization ...
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Bundles now persist as `${userId}/bundles/<name>.zip` and Galaxy can return a stable internal `/bundles/download?name=...` link that stays usable in stored chat (no Supabase signed URL persisted). Supabase link redaction no longer breaks markdown syntax. Unit tests and production build pass.",
+  "risks": [
+    "Manual end-to-end check still needed: create a bundle in Galaxy and click the internal link to confirm Safari/Chrome download behavior is correct.",
+    "Older bundles created under the previous storage path may not be downloadable via the new client download page (re-export fixes this).",
+    "Bundle naming may overwrite prior exports when the same inferred name is used and storage upload uses upsert=true."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": [
+      "In Galaxy, export a bundle and confirm the reply shows a short black dotted-underline download label (no raw URL).",
+      "Click the link and confirm the browser downloads the zip (Safari may auto-unzip) without InvalidJWT."
+    ]
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-18 — FEATURE: Persist assistant chat history (implementation)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-assistant-chat-persistence-implementation",
+  "mode": "FEATURE",
+  "title": "Persist Galaxy + Clarity chat history per session",
+  "description": "Implement minimal per-session chat persistence for Galaxy (global) and Clarity (per-document) with a token-based rolling window, reset controls, and delete-on-doc-delete behavior for Clarity.",
+  "acceptanceCriteria": [
+    "Galaxy chat loads prior messages for the user and persists new messages.",
+    "Clarity chat loads prior messages for the selected document and persists new messages.",
+    "Token-based rolling window keeps prompts small (no summaries).",
+    "Users can clear Galaxy chat and clear a document’s Clarity chat (reset button).",
+    "Deleting a document deletes its Clarity chat (DB cascade).",
+    "Automated tests and build pass."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "targetFiles": [
+      "supabase/sql/2025-12-18-assistant-chat.sql",
+      "src/app/api/files-agent/route.ts",
+      "src/components/FilesAssistantPanel.tsx",
+      "src/app/api/doc-chat/route.ts",
+      "src/components/DocumentTable.tsx",
+      "PRD.Next.md",
+      "DECISIONS.md",
+      "Plan.md"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Add Supabase tables + RLS for assistant sessions/messages.",
+    "kind": "code",
+    "targetFiles": ["supabase/sql/2025-12-18-assistant-chat.sql"],
+    "done": true,
+    "notes": "User will apply in Supabase SQL editor."
+  },
+  {
+    "id": "step-2",
+    "description": "Persist Galaxy chat per user with token-windowed history and reset.",
+    "kind": "code",
+    "targetFiles": ["src/app/api/files-agent/route.ts", "src/components/FilesAssistantPanel.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "description": "Persist Clarity chat per document with auth and reset.",
+    "kind": "code",
+    "targetFiles": ["src/app/api/doc-chat/route.ts", "src/components/DocumentTable.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-4",
+    "description": "Run tests and production build.",
+    "kind": "test",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "supabase/sql/2025-12-18-assistant-chat.sql",
+    "changeType": "add",
+    "beforeSnippet": null,
+    "afterSnippet": "Creates assistant_sessions and assistant_messages with RLS and cascade deletes (including doc delete -> clarity chat delete).",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/api/files-agent/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Galaxy chat was stateless and relied on client-passed messages only.",
+    "afterSnippet": "Adds per-user Galaxy session storage with token-windowed history, GET for loading history, and POST action to clear history.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/FilesAssistantPanel.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Galaxy chat was local-only with no history load or reset control.",
+    "afterSnippet": "Loads history from API when opened, uses server-returned persisted messages, and adds a reset button using reset.png.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/app/api/doc-chat/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Clarity chat used doc_chat_threads/messages without explicit auth token verification.",
+    "afterSnippet": "Stores per-doc Clarity chat in assistant tables with token windowing, reset action, and explicit auth token verification (Bearer/cookie).",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/DocumentTable.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Clarity chat did not have a reset control and did not send an auth token to the doc-chat API.",
+    "afterSnippet": "Adds a reset button (reset.png) and includes Authorization Bearer token on doc-chat GET/POST/clear requests.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "PRD.Next.md",
+    "changeType": "modify",
+    "beforeSnippet": "No explicit assistant chat history policy.",
+    "afterSnippet": "Documents minimal per-session storage (Galaxy global, Clarity per doc), token window, clear controls, and not persisting signed URLs.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "DECISIONS.md",
+    "changeType": "modify",
+    "beforeSnippet": "No decision recorded for assistant chat persistence.",
+    "afterSnippet": "Records token-windowed per-session storage (Galaxy global; Clarity per doc), no summaries, no TTL, reset controls, and not persisting signed URLs.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Captured raw output below."
+  },
+  {
+    "id": "next-build",
+    "description": "Compile production build (TypeScript).",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Captured raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 8ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 12ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 27ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  13:54:06
+   Duration  306ms (transform 411ms, setup 0ms, import 590ms, tests 55ms, environment 1ms)
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1754.8ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/16) ...
+   Generating static pages using 9 workers (4/16) 
+   Generating static pages using 9 workers (8/16) 
+   Generating static pages using 9 workers (12/16) 
+ ✓ Generating static pages using 9 workers (16/16) in 280.0ms
+   Finalizing page optimization ...
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Galaxy and Clarity chat now persist per session (Galaxy global per user; Clarity per document) with token-windowed history and reset controls. Tests and build pass.",
+  "risks": [
+    "DB migration must be applied in Supabase (`supabase/sql/2025-12-18-assistant-chat.sql`) before chat works in production.",
+    "Stored chat history is token-windowed; older messages beyond the window aren’t loaded (by design).",
+    "Signed URLs are sanitized in stored chat; users may need to regenerate downloads rather than relying on old links."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": [
+      "Apply SQL in Supabase, then open Galaxy assistant to confirm history loads and reset clears to intro.",
+      "Open Clarity chat for a document, send messages, refresh page, confirm messages persist; use reset; delete doc and confirm chat is gone."
+    ]
+  },
+  "notes": ""
+}
+```
+
 ## 2025-12-16 — FEATURE: Localized month abbreviations + period ranges
 
 ### Task (Task)
@@ -312,6 +979,66 @@ Route (app)
   },
   "notes": ""
 }
+```
+
+## 2025-12-18 — FEATURE: Chat history persistence + rolling summaries (both assistants)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-chat-history-rolling-summaries",
+  "mode": "FEATURE",
+  "title": "Persist assistant chat history with rolling context + summaries",
+  "description": "Design how to store chat history for both assistants (Files/Galaxy and Clarity), maintain a moving context window, and summarize older messages that slide out of the window for continuity.",
+  "acceptanceCriteria": [
+    "PRD/plan defines where and how to store chat messages per user and per assistant (tables/columns, retention, limits).",
+    "Moving context window behavior is defined (message cap, token/character cap, eviction rules).",
+    "Summarization strategy for evicted history is specified (when to summarize, what schema, how to attach to new turns).",
+    "Privacy/PII constraints, retention/TTL, and auditability considerations are captured.",
+    "Testing/validation approach is listed (unit/contract or manual flows for persistence and summary handoff)."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "targetFiles": [
+      "PRD.Next.md",
+      "Plan.md",
+      "DECISIONS.md (if new constraints are finalized)",
+      "v2docflowprompt.md (if assistant behavior updates are needed)"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Survey SoT for assistant behavior and current storage patterns; clarify goals/constraints for chat retention and summarization.",
+    "kind": "analysis",
+    "targetFiles": ["PRD.Next.md", "v2docflowprompt.md", "Plan.md", "DECISIONS.md"],
+    "done": true,
+    "notes": "Settled on minimal per-session storage (Galaxy global; Clarity per doc), token-based window, no TTL."
+  },
+  {
+    "id": "step-2",
+    "description": "Draft PRD addendum: data model (tables/fields), retention (TTL/limits), moving window rules, summarization triggers/shape, privacy/audit constraints.",
+    "kind": "docs",
+    "targetFiles": ["PRD.Next.md"],
+    "done": true,
+    "notes": "Added PRD section: token-based window, per-assistant/per-doc sessions, no idle TTL, clear controls, delete Clarity chat with doc, no stored signed URLs."
+  },
+  {
+    "id": "step-3",
+    "description": "Capture decisions/tradeoffs (storage location, summary schema, token budgets) and update prompts/specs if needed.",
+    "kind": "docs",
+    "targetFiles": ["DECISIONS.md", "v2docflowprompt.md", "Plan.md"],
+    "done": true,
+    "notes": "Decision logged: token-based rolling window, no TTL, per-doc Clarity sessions, clear controls, signed URLs recreated at render."
+  }
+]
 ```
 
 ## 2025-12-16 — FEATURE: Vision OCR defaults to gpt-4o
@@ -4916,6 +5643,578 @@ Route (app)
       "Reprocess a letter with IBAN/BIC: verify IBAN/BIC are stored in key_fields.reference_ids and not duplicated into extra_details.",
       "Reprocess a letter requesting documents: verify required_documents[] lists each doc + where/how to submit, with source_snippet and confidence.",
       "Reprocess a scanned/image PDF: verify OCR-text path succeeds (and still falls back to vision extraction if OCR text is empty)."
+    ]
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-18 — BUGFIX: Fix build blockers on tasks page, DocumentTable deep-dive icon, and MediaViewer pinch zoom
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-bugfix-build-blockers-tasks-doc-table-mediaviewer",
+  "mode": "BUGFIX",
+  "title": "Fix build blockers on tasks page, DocumentTable deep dive icon, and MediaViewer pinch zoom",
+  "description": "Resolve Next.js build failures from a missing translator hook on /tasks, a missing deep-dive icon import, and TouchList destructuring during pinch zoom so the test suite and build succeed.",
+  "acceptanceCriteria": [
+    "Next.js build succeeds without TypeScript errors.",
+    "Tasks page logout button uses the translation hook without undefined identifiers.",
+    "DocumentTable deep-dive chat buttons import a real icon asset.",
+    "MediaViewer pinch zoom handlers compile without TouchList iterator errors.",
+    "Automated tests continue to pass."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "issueId": "",
+    "branchName": "",
+    "severity": "",
+    "targetFiles": [
+      "src/app/tasks/page.tsx",
+      "src/components/DocumentTable.tsx",
+      "src/components/MediaViewer.tsx",
+      "Plan.md"
+    ],
+    "extra": {}
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Reproduce and capture build failure to locate undefined translator/icon and pinch touch typing errors.",
+    "kind": "analysis",
+    "targetFiles": ["src/app/tasks/page.tsx", "src/components/DocumentTable.tsx", "src/components/MediaViewer.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "description": "Fix missing translation hook usage, import deep-dive icon asset, and guard pinch handlers against non-iterable TouchList.",
+    "kind": "code",
+    "targetFiles": ["src/app/tasks/page.tsx", "src/components/DocumentTable.tsx", "src/components/MediaViewer.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "description": "Re-run automated tests and Next.js build to confirm green state.",
+    "kind": "test",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/tasks/page.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "useLanguage was consumed without the translator helper, leaving `t(...)` undefined in the logout button.",
+    "afterSnippet": "Destructure `t` from useLanguage so localized strings compile on the tasks page.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/DocumentTable.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Deep-dive chat buttons referenced deepDiveIcon without importing an asset, breaking build.",
+    "afterSnippet": "Import deepdive.png as deepDiveIcon for the deep-dive chat buttons.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/MediaViewer.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Pinch zoom handlers destructured TouchList directly, causing a non-iterable type error during build.",
+    "afterSnippet": "Use item() to read touches with null checks before distance math, avoiding TouchList iterator errors.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit test suite.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Capture raw output."
+  },
+  {
+    "id": "next-build",
+    "description": "Run Next.js production build (TypeScript).",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Capture raw output."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 2ms
+ ✓ src/lib/summary.test.ts (3 tests) 1ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 3ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 7ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 11ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 27ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  11:40:10
+   Duration  245ms (transform 358ms, setup 0ms, import 499ms, tests 53ms, environment 1ms)
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1723.6ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/16) ...
+   Generating static pages using 9 workers (4/16) 
+   Generating static pages using 9 workers (8/16) 
+   Generating static pages using 9 workers (12/16) 
+ ✓ Generating static pages using 9 workers (16/16) in 280.4ms
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/doc-chat
+├ ƒ /api/doc-chat/create-task
+├ ƒ /api/docs
+├ ƒ /api/docs/aggregate
+├ ƒ /api/docs/restructure
+├ ƒ /api/docs/zip
+├ ƒ /api/files-agent
+├ ƒ /api/label-candidates/promote
+├ ƒ /api/process-document
+├ ○ /files
+├ ○ /login
+└ ○ /tasks
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Fixed build blockers by wiring the tasks page translation hook, importing the deep-dive icon, and guarding pinch zoom touch handling. Test suite and Next.js build now pass.",
+  "risks": [
+    "Manual UI sanity not run: confirm deep-dive chat button renders correctly with the imported icon.",
+    "Manual touch check not run: pinch zoom should still behave correctly on touch devices after the type-safe guards."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": [
+      "Open /tasks and use the logout button to ensure it renders and signs out as expected.",
+      "On a touch device, verify pinch-to-zoom still works in the media viewer."
+    ]
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-18 — FEATURE: Calmer chat download links (short label + dotted underline)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-feature-chat-link-short-label",
+  "mode": "FEATURE",
+  "title": "Calmer chat download links",
+  "description": "Render assistant download links with a short readable label instead of the full signed URL, keeping black text with a dotted underline and an external-arrow hint.",
+  "acceptanceCriteria": [
+    "Signed download links in the Files assistant chat render as a short label (e.g., filename) instead of the full URL.",
+    "Links appear in black with a dotted underline; no default blue browser link styling.",
+    "Keyboard/assistive users can still see or copy the full URL via title/hover.",
+    "No regression to existing chat message rendering."
+  ],
+  "createdAt": "2025-12-18T00:00:00Z",
+  "metadata": {
+    "targetFiles": ["src/components/FilesAssistantPanel.tsx"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "description": "Inspect FilesAssistantPanel link rendering to confirm raw URLs are shown.",
+    "kind": "analysis",
+    "targetFiles": ["src/components/FilesAssistantPanel.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "description": "Derive a short link label (filename/hostname), render in black with dotted underline + arrow, and preserve the full URL in the title.",
+    "kind": "code",
+    "targetFiles": ["src/components/FilesAssistantPanel.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "description": "Run unit tests to ensure no regressions.",
+    "kind": "test",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/components/FilesAssistantPanel.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Links rendered the full raw URL with default blue underline.",
+    "afterSnippet": "Links derive a short label from the URL path/host, render in black with a dotted underline and arrow, keep the full URL in the title attribute, strip trailing punctuation so signed URLs aren’t broken by trailing parentheses/periods, and wrap link fragments in keyed spans to silence React key warnings.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit test suite.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Captured raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 8ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 4ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 12ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 28ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  7 passed (7)
+      Tests  25 passed (25)
+   Start at  11:48:01
+   Duration  316ms (transform 384ms, setup 0ms, import 591ms, tests 59ms, environment 0ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Assistant chat links now show a short black label with dotted underline and arrow; full URL is hidden from view but available via title. Trailing punctuation is stripped from hrefs to avoid broken signed URLs, and link fragments are keyed to resolve React warnings. Unit tests pass.",
+  "risks": [
+    "Manual UX check not yet run to verify the dotted underline appearance matches design across themes.",
+    "Long filenames are truncated with an ellipsis; confirm this is acceptable for users who need full names visible.",
+    "Manual recheck of a fresh bundle link is recommended to confirm no trailing punctuation is captured in the href.",
+    "Bundle naming is inferred heuristically (all-docs/category/single doc count); confirm expected names for other flows."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test"],
+    "manualChecks": [
+      "Send a bundle download reply in the Files assistant and confirm the link renders as a short black dotted-underline label with an external arrow, and hover/title exposes the full URL.",
+      "Click the link to ensure the signed URL opens (no InvalidJWT) and the bundle downloads as a .zip."
+    ]
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-18 — FEATURE: World-class scanning (quality-gated multi-page stack)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-18-world-class-scanning-quality-gate",
+  "mode": "FEATURE",
+  "title": "World-class scanning capture + multi-page assembly",
+  "description": "Upgrade scanning to aggressively prevent bad capture inputs (OCR quality is decided at capture time): real-time guidance, optional auto-capture, enforced quality gate (blur/lighting/glare/crop confidence), OCR-friendly enhancement presets, a multi-page stack with review (reorder/crop/rotate/presets/split), and a save screen that uploads as one PDF with title + folder.",
+  "acceptanceCriteria": [
+    "Scan screen is full-screen camera with edge outline, stability guidance, blur/dark/glare warnings, and optional auto-capture toggle.",
+    "Each capture runs a quality gate; low quality forces retake and does not add to the stack.",
+    "Multi-page stack accumulates thumbnails during scanning and supports delete/retake/crop actions.",
+    "Review screen supports drag reorder, delete, per-page crop/rotate, and enhancement presets (global + per-page override).",
+    "Save screen uploads as 1 PDF with a suggested title and optional folder/category selection."
+  ],
+  "createdAt": "2025-12-18T17:05:00.000Z",
+  "metadata": {
+    "targetFiles": [
+      "src/components/UploadForm.tsx",
+      "src/components/ScanFlowModal.tsx",
+      "src/lib/scanQuality.ts",
+      "src/lib/scanQuality.test.ts",
+      "src/lib/language.tsx"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "analysis",
+    "description": "Audit existing scan/upload flow (UploadForm) and SoT constraints; identify target surfaces and UX gaps.",
+    "targetFiles": ["src/components/UploadForm.tsx", "src/lib/language.tsx", "Plan.md", "DECISIONS.md"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "code",
+    "description": "Implement new ScanFlowModal with full-screen scan/review/save flow, quality gate, and OCR presets; wire into UploadForm.",
+    "targetFiles": ["src/components/ScanFlowModal.tsx", "src/components/UploadForm.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "kind": "code",
+    "description": "Add quality scoring + image preset processing utilities and unit tests.",
+    "targetFiles": ["src/lib/scanQuality.ts", "src/lib/scanQuality.test.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-4",
+    "kind": "docs",
+    "description": "Add i18n strings for new scanning UI and record a decision about capture-time quality gating + presets.",
+    "targetFiles": ["src/lib/language.tsx", "DECISIONS.md"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-5",
+    "kind": "tests",
+    "description": "Run unit tests and production build; record lint status.",
+    "targetFiles": [],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/components/UploadForm.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "UploadForm owned a small scan modal (camera + jscanify outline + manual capture) and uploaded immediately as PDF with limited review.",
+    "afterSnippet": "UploadForm delegates scanning to ScanFlowModal and extends startUpload to accept optional title/category overrides for the scan save screen.",
+    "wholeFile": null
+  },
+	  {
+	    "filePath": "src/components/ScanFlowModal.tsx",
+	    "changeType": "create",
+	    "beforeSnippet": null,
+	    "afterSnippet": "New full-screen scan → review → save flow: edge outline, stability + lighting + blur warnings, optional auto-capture (only when stable + detected + not blurry), enforced quality gate with retake overlay, multi-page tray, review drag reorder + per-page edit (crop/rotate/preset/split), and save metadata (title + folder) before uploading 1 PDF.",
+	    "wholeFile": null
+	  },
+  {
+    "filePath": "src/lib/scanQuality.ts",
+    "changeType": "create",
+    "beforeSnippet": null,
+    "afterSnippet": "Scan quality metrics (focus/contrast/brightness/glare) + crop confidence; strict gate thresholds; OCR/grayscale/color preset processing (contrast stretch + Otsu binarization for OCR).",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/lib/scanQuality.test.ts",
+    "changeType": "create",
+    "beforeSnippet": null,
+    "afterSnippet": "Unit tests for scan quality metrics, gating, crop confidence, and OCR binarization behavior.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/lib/language.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Only basic scan strings existed (title/hint/capture/error).",
+    "afterSnippet": "Adds new scan flow strings (done/page count, warnings, torch, auto toggle, review/save labels, editor controls, and gate reason copy) in EN/DE with fallback for other languages.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit test suite (includes scan quality unit tests).",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": ["src/lib/scanQuality.test.ts"],
+    "notes": "Captured raw output below."
+  },
+  {
+    "id": "build",
+    "description": "Run production build to ensure TS/Next compile succeeds.",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": ["src/components/ScanFlowModal.tsx"],
+    "notes": "Captured raw output below."
+  },
+  {
+    "id": "lint",
+    "description": "Run eslint (expected to fail due to pre-existing errors).",
+    "type": "lint",
+    "commands": ["NO_COLOR=1 pnpm lint"],
+    "targetFiles": [],
+    "notes": "Lint fails with pre-existing repo errors (not addressed in this feature slice). Raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/summary.test.ts (3 tests) 1ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 3ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 9ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 5ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 10ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 13ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 29ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  17:01:53
+   Duration  382ms (transform 492ms, setup 0ms, import 724ms, tests 74ms, environment 1ms)
+```
+
+```text
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1926.0ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18)
+   Generating static pages using 9 workers (8/18)
+   Generating static pages using 9 workers (13/18)
+ ✓ Generating static pages using 9 workers (18/18) in 387.3ms
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/bundles/download
+├ ƒ /api/doc-chat
+├ ƒ /api/doc-chat/create-task
+├ ƒ /api/docs
+├ ƒ /api/docs/aggregate
+├ ƒ /api/docs/restructure
+├ ƒ /api/docs/zip
+├ ƒ /api/files-agent
+├ ƒ /api/label-candidates/promote
+├ ƒ /api/process-document
+├ ○ /bundles/download
+├ ○ /files
+├ ○ /login
+└ ○ /tasks
+```
+
+```text
+> docflow@0.1.0 lint /Users/joelthal/docflow
+> eslint
+
+Lint currently fails due to pre-existing repo errors (e.g., @typescript-eslint/no-explicit-any in multiple API routes and a react-hooks/set-state-in-effect issue in src/lib/language.tsx). This feature slice did not attempt to make lint pass globally.
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Scanning is upgraded to a full-screen scan→review→save flow with real-time capture guidance, an enforced quality gate (blur/dark/glare/crop confidence), OCR-focused enhancement presets, and painless multi-page assembly (stack tray + review reorder/crop/rotate/presets/split) before uploading as one PDF with title + optional folder. Unit tests and production build pass.",
+  "risks": [
+    "Quality gate thresholds (blur/contrast/glare/stability) are heuristic and may need tuning on real devices (especially low-light).",
+    "Torch control via MediaStream constraints is browser-dependent; the torch button may be disabled on unsupported devices.",
+    "Mobile drag reorder UX can be finicky; verify on iOS Safari/Chrome and adjust rowHeight or pointer-capture behavior if needed.",
+    "Lint fails in this repo due to pre-existing errors; this feature slice did not attempt to make eslint green."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build", "NO_COLOR=1 pnpm lint"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": [
+      "Open the upload composer → Scannen; verify full-screen camera, edge outline, and live warnings (Hold still / Zu dunkel / Reflexion / Unscharf).",
+      "Enable Auto; verify auto-capture only triggers when stable + detected + not blurry; verify haptic (if supported).",
+      "Force a bad scan (shake / cover lens); verify quality gate blocks and shows a retake screen with the captured image and only “Neu aufnehmen”.",
+      "Scan 5–10 pages; delete one; reorder in review via drag; crop/rotate a page; set preset OCR/Grayscale/Color (global and per-page); optionally Split a page; then save as one document.",
+      "On save, set title + folder; confirm upload inserts a single document row with that title and kicks processing."
     ]
   },
   "notes": ""

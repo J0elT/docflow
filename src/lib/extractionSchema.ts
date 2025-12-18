@@ -22,8 +22,15 @@ export const extractionSchema = z
     key_fields: z
       .object({
         language: z.string().nullable().optional(),
+        issuer_short: z.string().nullable().optional(),
+        issuer_legal: z.string().nullable().optional(),
+        document_date: z.string().nullable().optional(),
+        billing_period: z.string().nullable().optional(),
         sender: z.string().nullable().optional(),
         topic: z.string().nullable().optional(),
+        contact_person: z.string().nullable().optional(),
+        contact_phone: z.string().nullable().optional(),
+        contact_email: z.string().nullable().optional(),
         letter_date: z.string().nullable().optional(),
         due_date: z.string().nullable().optional(),
         amount_total: z.number().nullable().optional(),
@@ -32,14 +39,10 @@ export const extractionSchema = z
         action_description: z.string().nullable().optional(),
         follow_up: z.string().nullable().optional(),
         category_path: z.array(z.string()).nullable().optional(),
-        reference_ids: z
-          .object({
-            steuernummer: z.union([z.string(), z.null()]).optional(),
-            kundennummer: z.union([z.string(), z.null()]).optional(),
-            vertragsnummer: z.union([z.string(), z.null()]).optional(),
-          })
-          .partial()
-          .optional(),
+	        reference_ids: z
+	          .record(z.union([z.string(), z.null()]))
+	          .nullable()
+	          .optional(),
         parties: z
           .array(
             z
@@ -124,6 +127,21 @@ export const extractionSchema = z
             due_date: z.string().nullable().optional(),
             severity: z.string().nullable().optional(),
             is_blocking: z.boolean().nullable().optional(),
+            source_snippet: z.string().nullable().optional(),
+            confidence: z.number().nullable().optional(),
+          })
+          .partial()
+      )
+      .nullable()
+      .optional(),
+    required_documents: z
+      .array(
+        z
+          .object({
+            id: z.string().nullable().optional(),
+            description: z.string().nullable().optional(),
+            where_how: z.string().nullable().optional(),
+            related_deadline_ids: z.array(z.string()).nullable().optional(),
             source_snippet: z.string().nullable().optional(),
             confidence: z.number().nullable().optional(),
           })

@@ -48,8 +48,15 @@ Assume `.env.local` already exists with:
 - SUPABASE_URL
 - SUPABASE_SERVICE_ROLE_KEY
 - OPENAI_API_KEY
+- DOCFLOW_PROCESS_MODEL (optional, default `gpt-5.2`)
+- DOCFLOW_PROCESS_TEXT_MODEL (optional override)
+- DOCFLOW_PROCESS_TEXT_FALLBACK_MODEL (optional, default `gpt-4o-mini`)
+- DOCFLOW_PROCESS_VISION_MODEL (optional override, default `gpt-4o`)
+- DOCFLOW_PROCESS_VISION_FALLBACK_MODEL (optional, default `gpt-4o-mini`)
 
 You must not hardcode these values; always use process.env.
+
+Vision/OCR defaults to `gpt-4o` (fallback `gpt-4o-mini`) so `image_url` payloads do not hit text-only models; override via env vars as needed.
 
 ## Goal
 
@@ -66,7 +73,7 @@ Implement a minimal but working MVP of **DocFlow**, a simple app that:
 5. Triggers a server-side process that:
    - downloads the file from storage
    - extracts text (for pdfs use pdf-parse; other formats just treat as utf8 text)
-   - calls the OpenAI chat completions API (model: gpt-4.1-mini) with a prompt that returns **JSON only** with this structure:
+   - calls the OpenAI chat completions API (model: `DOCFLOW_PROCESS_MODEL`, default `gpt-5.2`) with a prompt that returns **JSON only** with this structure:
 
      {
        "summary": "<max 5 sentences>",

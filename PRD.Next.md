@@ -118,6 +118,31 @@ A simple category such as:
 
 Users can adjust this category.
 
+⸻
+
+## 2025-12 — Orderly mobile-first attention/file view (addendum)
+
+- Branding & header
+	• Product name is “Orderly”; centered brand mark.
+	• Profile icon replaces email/logout; tapping opens a small overlay (blur background) with language switcher + “Log out”; dismiss on outside tap.
+- Bottom navigation
+	• Left: paper-plane (attention/inbox). Center: oversized plus (upload/add). Right: folder (files/archive). Blur other nav items when the plus overlay is open.
+- Attention page sections
+	• Two stacks: “Needs your attention” (docs with active to-dos) and “Swipe right to file” (ready to file).
+	• Each document is a rounded card with:
+		– Top row: title on the left; preview icon next to title; key tags as pill chips on the same row; inline “+” to add a to-do on the right.
+		– To-Do area: carousel-style to-do chips/cards; overflow hinted by a partial card on the right. Desktop also shows a right-arrow CTA; mobile uses swipe.
+		– Summary line plus “show additional details” toggle; expanded view lists extra bullets and deadlines.
+		– Completed tasks: collapsed by default; expanded view shows a “completed (n)” carousel row.
+		– Filing affordance: when no active to-dos, show “No current To-Do” and surface “move to file” (button on desktop; swipe on mobile).
+		– Bottom actions row (always visible): left = details toggle; center = deep-dive chat bubble; right = trash/delete. Preview lives in the top row; to-do “+” sits near tags.
+- Interactions
+	• Profile and plus overlays blur the rest of the UI.
+	• Attention page focuses on docs with active to-dos; ready-to-file emphasizes swipe/arrow to archive.
+	• Deep-dive chat is document-scoped; preview opens the doc; trash deletes (with confirm/undo per implementation).
+- Non-goals
+	• No backend data model changes; this is a layout/interaction refresh.
+
 Outcome: Every document has a clear, minimal summary that removes ambiguity and anxiety.
 
 ⸻
@@ -225,3 +250,15 @@ Strip everything down and the product is:
 
 A calm, multilingual inbox for official letters that extracts the one thing that matters:
 what the letter wants from you, in simple words, with the right deadline, and a place to file it away once you’re done.
+
+⸻
+
+10. Assistant chat history (minimal, per-session)
+
+To keep assistants (Galaxy = cross-doc; Clarity = per-document) reliable without heavy infra:
+	•	Scope: store chat history per assistant session only; Galaxy has one rolling session per user, Clarity sessions are keyed by document_id. No cross-session recall and no summarization layer yet.
+	•	Window: token-based rolling window (e.g., ~2–3k tokens). Older turns beyond the token budget are pruned; no idle-expiry TTL.
+	•	Storage: Supabase tables with strict RLS by user. Do not persist signed URLs—store doc/task IDs plus short labels, and recreate signed URLs at render time.
+	•	Retention controls: provide “Clear Galaxy chat” and “Clear this document’s chat”; delete Clarity chat when the document is deleted.
+	•	Language: keep messages in the user’s UI language; store lang per session/message; switch if the user explicitly asks in chat.
+This keeps chat context practical while avoiding unnecessary complexity; summaries can be added later if long sessions or audit needs emerge.

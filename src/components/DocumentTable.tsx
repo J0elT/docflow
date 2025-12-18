@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps */
 
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { getLocaleForLanguage, useLanguage } from "@/lib/language";
 import { extractDateRangeToIso, formatDateYmdMon, formatYearMonthYmdMon, replaceIsoDatesInText } from "@/lib/dateFormat";
@@ -12,9 +12,27 @@ import { createPortal } from "react-dom";
 import viewIcon from "../../images/view.png";
 import saveIcon from "../../images/save.png";
 import binIcon from "../../images/bin.png";
-import deepDiveIcon from "../../images/ai-technology.png";
-import starAiIcon from "../../images/starai.png";
+import galaxyIcon from "../../images/ai.png";
+import clarityIcon from "../../images/starai.png";
+import deepDiveIcon from "../../images/deepdive.png";
+import resetIcon from "../../images/reset.png";
 import trashIcon from "../../images/bin.png";
+import taskIcon from "../../images/task.png";
+import stackIcon from "../../images/stack.png";
+import { MediaViewer } from "./MediaViewer";
+
+const formatBreadcrumbPath = (path?: string | null) => {
+  if (!path) return "";
+  const parts = path
+    .split("/")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "";
+  const sep = " › ";
+  if (parts.length <= 3) return parts.join(sep);
+  const tail = parts.slice(-3);
+  return ["…", ...tail].join(sep);
+};
 
 type ExtractionRow = {
   content: {
@@ -219,6 +237,7 @@ export default function DocumentTable({
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | undefined>(undefined);
   const [previewName, setPreviewName] = useState<string | null>(null);
+  const [previewIsImage, setPreviewIsImage] = useState(false);
   const [busyRow, setBusyRow] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [userNameHints, setUserNameHints] = useState<string[]>([]);
@@ -249,6 +268,7 @@ export default function DocumentTable({
   const [chatLoading, setChatLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatError, setChatError] = useState<string | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const kindleButtonStyle: React.CSSProperties = {
     padding: "10px 18px",
@@ -282,6 +302,14 @@ export default function DocumentTable({
     }, 3000);
     return () => clearTimeout(timer);
   }, [expandedPaths]);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }, [chatMessages]);
 
   const cleanupEmptyCase = useCallback(
     async (caseId?: string | null, supabase?: ReturnType<typeof supabaseBrowser>, userIdParam?: string | null) => {
@@ -2261,6 +2289,18 @@ const fetchDocs = useCallback(
   };
 
   useEffect(() => {
+    const handleDataChanged = () => fetchDocs(true);
+    if (typeof window !== "undefined") {
+      window.addEventListener("docflow:data-changed", handleDataChanged);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("docflow:data-changed", handleDataChanged);
+      }
+    };
+  }, [fetchDocs]);
+
+  useEffect(() => {
     fetchDocs(true);
   }, [categoryFilter, fetchDocs]);
 
@@ -2455,35 +2495,62 @@ const fetchDocs = useCallback(
 	              return (
                 <div
                   key={row.id}
-                className="rounded-[18px] border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 shadow-sm"
-                style={{
-                  position: "relative",
-                  paddingTop: "24px",
-                  paddingBottom: "24px",
-                }}
-              >
-                  {row.status === "done" && (
-                    <div className="absolute" style={{ right: "12px", top: "12px" }}>
-                      <button
-                        type="button"
-                        aria-label="Actions"
-                        onClick={() => setActionMenuRow(row)}
-                        style={{
-                          border: "none",
-                          background: "transparent",
-                          padding: "6px",
-                          fontSize: "20px",
-                          cursor: "pointer",
-                          color: "#000",
-                        }}
-                      >
-                        <span style={{ color: "#000" }}>⋮</span>
-                      </button>
-                    </div>
-                  )}
+                  className="pit-radius-lg border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 pit-shadow-1"
+                  style={{
+                    position: "relative",
+                    paddingTop: "24px",
+                    paddingBottom: "24px",
+                    cursor: mode === "files" ? "pointer" : "default",
+                  }}
+                  onClick={() => {
+                    if (mode === "files") {
+                      setExpandedCards((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(row.id)) next.delete(row.id);
+                        else next.add(row.id);
+                        return next;
+                      });
+                    }
+                  }}
+                >
+                  <div
+                    className="absolute flex items-center gap-2"
+                    style={{ right: "4px", top: "12px" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      aria-label="Actions"
+                      onClick={() => setActionMenuRow(row)}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        padding: "8px",
+                        cursor: "pointer",
+                        minWidth: "44px",
+                        minHeight: "44px",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        opacity: 0.75,
+                      }}
+                    >
+                      <Image src={stackIcon} alt="Actions" width={16} height={16} style={{ opacity: 0.9 }} />
+                    </button>
+                  </div>
                   <div className="flex items-start justify-between gap-3 pr-4">
                     <div className="flex flex-col gap-1" style={{ flex: 1 }}>
-                      <div className="font-medium" style={{ wordBreak: "break-word", paddingRight: "32px" }}>
+                      <div
+                        className="font-medium"
+                        style={{
+                          wordBreak: "break-word",
+                          paddingRight: "32px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          display: "block",
+                        }}
+                      >
                         {displayTitle}
                       </div>
                       <div className="flex items-center gap-2" style={{ marginTop: "10px" }}>
@@ -2498,32 +2565,6 @@ const fetchDocs = useCallback(
                         )}
                       </div>
                     </div>
-                    {mode === "files" && (
-                      <button
-                        type="button"
-                        aria-label={t("showDetails")}
-                        onClick={() =>
-                          setExpandedCards((prev) => {
-                            const next = new Set(prev);
-                            next.add(row.id);
-                            return next;
-                          })
-                        }
-                        className="text-lg"
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontSize: "36px",
-                            lineHeight: 1,
-                            position: "absolute",
-                            right: "16px",
-                            bottom: "16px",
-                          }}
-                      >
-                        ▾
-                      </button>
-                    )}
                   </div>
                 </div>
               );
@@ -2531,32 +2572,49 @@ const fetchDocs = useCallback(
             return (
               <div
                 key={row.id}
-                className="rounded-[18px] border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 shadow-sm"
+                className="pit-radius-lg border border-[rgba(0,0,0,0.1)] bg-[rgba(247,243,236,0.4)] p-4 pit-shadow-1"
                 style={{
                   position: "relative",
                   paddingTop: "24px",
                   paddingBottom: "24px",
+                  cursor: mode === "files" ? "pointer" : "default",
+                }}
+                onClick={() => {
+                  if (mode === "files") {
+                    setExpandedCards((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(row.id)) next.delete(row.id);
+                      else next.add(row.id);
+                      return next;
+                    });
+                  }
                 }}
                 >
-                  {row.status === "done" && (
-                    <div className="absolute" style={{ right: "12px", top: "12px" }}>
-                      <button
-                        type="button"
-                        aria-label="Actions"
-                        onClick={() => setActionMenuRow(row)}
-                        style={{
-                          border: "none",
-                          background: "transparent",
-                          padding: "6px",
-                          fontSize: "20px",
-                          cursor: "pointer",
-                          color: "#000",
-                        }}
-                      >
-                        <span style={{ color: "#000" }}>⋮</span>
-                      </button>
-                    </div>
-                  )}
+                  <div
+                    className="absolute flex items-center gap-2"
+                    style={{ right: "4px", top: "12px" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      aria-label="Actions"
+                      onClick={() => setActionMenuRow(row)}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        padding: "8px",
+                        cursor: "pointer",
+                        minWidth: "44px",
+                        minHeight: "44px",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        opacity: 0.75,
+                      }}
+                    >
+                      <Image src={stackIcon} alt="Actions" width={16} height={16} style={{ opacity: 0.9 }} />
+                    </button>
+                  </div>
                   <div className="flex flex-col gap-3 pr-4">
                   <div className="flex flex-wrap items-start justify-between gap-3 pr-1">
                       <div
@@ -2582,7 +2640,9 @@ const fetchDocs = useCallback(
 	                        {mode === "files" && (
 	                          <div className="flex items-center gap-2" style={{ marginTop: "3px" }}>
 	                            {row.category_path ? (
-	                              <span className="text-xs text-[rgba(0,0,0,0.65)]">{row.category_path}</span>
+	                              <span className="text-xs text-[rgba(0,0,0,0.65)]">
+                                  {formatBreadcrumbPath(row.category_path)}
+                                </span>
 	                            ) : (
                               <span className="text-xs text-[rgba(0,0,0,0.45)]">{t("noCategory") ?? ""}</span>
                             )}
@@ -2608,32 +2668,6 @@ const fetchDocs = useCallback(
                           </div>
                         ) : null}
                       </div>
-                      {mode === "files" && (
-                        <button
-                          type="button"
-                          aria-label={t("hideDetails")}
-                          onClick={() =>
-                            setExpandedCards((prev) => {
-                              const next = new Set(prev);
-                              next.delete(row.id);
-                              return next;
-                            })
-                          }
-                          className="text-lg"
-                          style={{
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontSize: "36px",
-                            lineHeight: 1,
-                            position: "absolute",
-                            right: "16px",
-                            bottom: "16px",
-                          }}
-                        >
-                          ▴
-                        </button>
-                      )}
                     </div>
 
                   {hasAnyTasks && (
@@ -3004,7 +3038,17 @@ const fetchDocs = useCallback(
                     <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-wrap items-center gap-3">
-                        <div className="font-medium" style={{ wordBreak: "break-word", paddingRight: "32px" }}>
+                        <div
+                          className="font-medium"
+                          style={{
+                            wordBreak: "break-word",
+                            paddingRight: "32px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            display: "block",
+                          }}
+                        >
                           {displayTitle}
                         </div>
                         <button
@@ -3599,6 +3643,15 @@ const fetchDocs = useCallback(
     };
   }, [userId, fetchDocs]);
 
+  const broadcastDocsChanged = useCallback((detail: Record<string, unknown>) => {
+    try {
+      if (typeof window === "undefined") return;
+      window.dispatchEvent(new CustomEvent("docflow:documents-changed", { detail }));
+    } catch (err) {
+      console.warn("docs-changed broadcast failed", err);
+    }
+  }, []);
+
   const handleDelete = async (row: TableRow) => {
     if (!row.storage_path) return;
     const previousCaseId = row.case_id;
@@ -3627,6 +3680,7 @@ const fetchDocs = useCallback(
 
       await cleanupEmptyCase(previousCaseId, supabase, user.id);
       fetchDocs(false);
+      broadcastDocsChanged({ reason: "deleted", documentId: row.id });
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to delete document");
@@ -3638,17 +3692,17 @@ const fetchDocs = useCallback(
   const uiText = useMemo(
     () => ({
       title: {
-        de: "Deep Dive",
-        en: "Deep Dive",
-        ro: "Analiză detaliată",
-        tr: "Derin inceleme",
-        fr: "Analyse détaillée",
-        es: "Análisis detallado",
-        ar: "تحليل متعمق",
-        pt: "Análise detalhada",
-        ru: "Глубокий разбор",
-        pl: "Dogłębna analiza",
-        uk: "Детальний розбір",
+        de: "Clarity",
+        en: "Clarity",
+        ro: "Clarity",
+        tr: "Clarity",
+        fr: "Clarity",
+        es: "Clarity",
+        ar: "Clarity",
+        pt: "Clarity",
+        ru: "Clarity",
+        pl: "Clarity",
+        uk: "Clarity",
       },
       close: {
         de: "Schließen",
@@ -3677,30 +3731,30 @@ const fetchDocs = useCallback(
         uk: "Завантаження чату…",
       },
       ask: {
-        de: "Stelle eine Frage zu diesem Dokument.",
-        en: "Ask a question about this document.",
-        ro: "Pune o întrebare despre acest document.",
-        tr: "Bu belge hakkında soru sor.",
-        fr: "Posez une question sur ce document.",
-        es: "Haz una pregunta sobre este documento.",
-        ar: "اطرح سؤالاً حول هذا المستند.",
-        pt: "Faça uma pergunta sobre este documento.",
-        ru: "Задайте вопрос об этом документе.",
-        pl: "Zadaj pytanie o ten dokument.",
-        uk: "Поставте запитання про цей документ.",
+        de: "Fragen zum Dokument",
+        en: "Questions about this document",
+        ro: "Întrebări despre acest document",
+        tr: "Bu belgeyle ilgili sorular",
+        fr: "Questions sur ce document",
+        es: "Preguntas sobre este documento",
+        ar: "أسئلة حول هذا المستند",
+        pt: "Perguntas sobre este documento",
+        ru: "Вопросы по этому документу",
+        pl: "Pytania o ten dokument",
+        uk: "Питання щодо цього документа",
       },
       placeholder: {
-        de: "Frage nach Fristen, Beträgen, Aufgaben…",
-        en: "Ask about deadlines, amounts, tasks…",
-        ro: "Întreabă despre termene, sume, sarcini…",
-        tr: "Son tarihler, tutarlar, görevler hakkında sor…",
-        fr: "Demandez sur les délais, montants, tâches…",
-        es: "Pregunta sobre plazos, importes, tareas…",
-        ar: "اسأل عن المواعيد النهائية والمبالغ والمهام…",
-        pt: "Pergunte sobre prazos, valores, tarefas…",
-        ru: "Спросите о сроках, суммах, задачах…",
-        pl: "Zapytaj o terminy, kwoty, zadania…",
-        uk: "Запитайте про дедлайни, суми, завдання…",
+        de: "Frage zu diesem Dokument…",
+        en: "Question about this document…",
+        ro: "Întrebare despre acest document…",
+        tr: "Bu belge hakkında soru…",
+        fr: "Question sur ce document…",
+        es: "Pregunta sobre este documento…",
+        ar: "سؤال حول هذا المستند…",
+        pt: "Pergunta sobre este documento…",
+        ru: "Вопрос об этом документе…",
+        pl: "Pytanie o ten dokument…",
+        uk: "Питання про цей документ…",
       },
       send: {
         de: "Senden",
@@ -3726,7 +3780,13 @@ const fetchDocs = useCallback(
     setChatMessages([]);
     setChatError(null);
     try {
-      const res = await fetch(`/api/doc-chat?documentId=${row.id}&lang=${lang}`);
+      const supabase = supabaseBrowser();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token ?? null;
+      if (!accessToken) throw new Error("Not logged in.");
+      const res = await fetch(`/api/doc-chat?documentId=${row.id}&lang=${lang}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
       if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
       const data = await res.json();
       setChatThreadId(data.threadId || null);
@@ -3744,6 +3804,30 @@ const fetchDocs = useCallback(
     }
   };
 
+  const clearDocChat = async () => {
+    if (!chatForDoc) return;
+    setChatLoading(true);
+    try {
+      const supabase = supabaseBrowser();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token ?? null;
+      if (!accessToken) throw new Error("Not logged in.");
+      const res = await fetch("/api/doc-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ documentId: chatForDoc, action: "clear" }),
+      });
+      if (!res.ok) throw new Error(`Failed to clear chat (${res.status})`);
+      setChatMessages([]);
+      setChatThreadId(null);
+    } catch (err) {
+      console.error(err);
+      setChatError(err instanceof Error ? err.message : "Failed to clear chat");
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
   const sendChat = async () => {
     if (!chatForDoc || !chatInput.trim()) return;
     setChatLoading(true);
@@ -3752,9 +3836,13 @@ const fetchDocs = useCallback(
     setChatInput("");
     setChatError(null);
     try {
+      const supabase = supabaseBrowser();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token ?? null;
+      if (!accessToken) throw new Error("Not logged in.");
       const res = await fetch("/api/doc-chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
           documentId: chatForDoc,
           threadId: chatThreadId,
@@ -3795,6 +3883,8 @@ const fetchDocs = useCallback(
       if (error || !signed?.signedUrl) throw error;
       setPreviewUrl(signed.signedUrl);
       setPreviewName(replaceIsoDatesInText(row.title, lang) ?? row.title);
+      const lower = row.storage_path.toLowerCase();
+      setPreviewIsImage(/\.(png|jpe?g|gif|webp|avif|bmp|heic|heif)$/i.test(lower));
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to load preview");
@@ -3894,6 +3984,7 @@ const fetchDocs = useCallback(
         .eq("id", row.id);
       if (updateError) throw updateError;
       fetchDocs(false);
+      broadcastDocsChanged({ reason: "category_changed", documentId: row.id, categoryId: newCategoryId });
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : "Failed to update category");
@@ -4073,12 +4164,12 @@ const fetchDocs = useCallback(
       )}
       {actionMenuRow && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
           style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
           onClick={() => setActionMenuRow(null)}
         >
           <div
-            className="rounded-2xl border border-[rgba(0,0,0,0.18)] bg-[rgba(247,243,236,0.97)] shadow-2xl w-full max-w-lg"
+            className="w-full max-w-lg pit-radius-xl pit-shadow-2 border border-[rgba(0,0,0,0.18)] bg-[rgba(247,243,236,0.97)]"
             style={{ maxHeight: "88vh" }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -4093,59 +4184,104 @@ const fetchDocs = useCallback(
                 }}
               />
             </div>
-            <div className="flex flex-col divide-y divide-[rgba(0,0,0,0.14)]">
-              <button
-                type="button"
-                onClick={() => {
-                  openAddTask(actionMenuRow);
-                  setActionMenuRow(null);
-                }}
-                className="flex items-center gap-4 px-7 py-4 text-left"
-                style={{ background: "transparent", border: "none", cursor: "pointer" }}
-              >
-                <span
-                  style={{
-                    fontSize: "26px",
-                    minWidth: "30px",
-                    textAlign: "center",
-                    display: "inline-flex",
-                    justifyContent: "center",
-                  }}
-                >
-                  +
-                </span>
-                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
-                  {t("addTask")}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  openChat(actionMenuRow);
-                  setActionMenuRow(null);
-                }}
-                className="flex items-center gap-4 px-7 py-4 text-left"
-                style={{ background: "transparent", border: "none", cursor: "pointer" }}
-              >
-                <Image src={starAiIcon} alt="Chat" width={28} height={28} style={{ minWidth: "30px" }} />
-                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
-                  {t("explainDocument") || "Explain this document"}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  handlePreview(actionMenuRow);
-                  setActionMenuRow(null);
-                }}
-                className="flex items-center gap-4 px-7 py-4 text-left"
-                style={{ background: "transparent", border: "none", cursor: "pointer" }}
-              >
-                <Image src={viewIcon} alt="Open original" width={28} height={28} style={{ minWidth: "30px" }} />
-                <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
-                  {t("openOriginalDocument") || "Open original document"}
-                </span>
-              </button>
+            <div className="flex flex-col divide-y divide-[rgba(0,0,0,0.12)]">
+              {(() => {
+                const explainLabel: Record<string, string> = {
+                  de: "Dieses Dokument verstehen",
+                  en: "Understand this document",
+                  ro: "Înțelege acest document",
+                  tr: "Bu belgeyi anla",
+                  fr: "Comprendre ce document",
+                  es: "Entender este documento",
+                  ar: "فهم هذا المستند",
+                  pt: "Entender este documento",
+                  ru: "Понять этот документ",
+                  pl: "Zrozum ten dokument",
+                  uk: "Зрозуміти цей документ",
+                };
+                const openLabel: Record<string, string> = {
+                  de: "Original öffnen",
+                  en: "Open original",
+                  ro: "Deschide originalul",
+                  tr: "Orijinali aç",
+                  fr: "Ouvrir l’original",
+                  es: "Abrir original",
+                  ar: "افتح النسخة الأصلية",
+                  pt: "Abrir original",
+                  ru: "Открыть оригинал",
+                  pl: "Otwórz oryginał",
+                  uk: "Відкрити оригінал",
+                };
+                const addTaskLabel: Record<string, string> = {
+                  de: "Aufgabe hinzufügen",
+                  en: "Add task",
+                  ro: "Adaugă sarcină",
+                  tr: "Görev ekle",
+                  fr: "Ajouter une tâche",
+                  es: "Añadir tarea",
+                  ar: "إضافة مهمة",
+                  pt: "Adicionar tarefa",
+                  ru: "Добавить задачу",
+                  pl: "Dodaj zadanie",
+                  uk: "Додати завдання",
+                };
+                const explainText = explainLabel[lang] || t("explainDocument") || "Explain this document";
+                const openText = openLabel[lang] || t("openOriginalDocument") || "Open original document";
+                const addTaskText = addTaskLabel[lang] || t("addTask") || "Add task";
+
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openChat(actionMenuRow);
+                        setActionMenuRow(null);
+                      }}
+                      className="flex items-center gap-4 px-6 py-3 text-left"
+                      style={{ background: "transparent", border: "none", cursor: "pointer" }}
+                    >
+                      <Image src={clarityIcon} alt="Chat" width={24} height={24} style={{ minWidth: "32px" }} />
+                      <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                        {explainText}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handlePreview(actionMenuRow);
+                        setActionMenuRow(null);
+                      }}
+                      className="flex items-center gap-4 px-6 py-3 text-left"
+                      style={{ background: "transparent", border: "none", cursor: "pointer" }}
+                    >
+                      <Image src={viewIcon} alt="Open original" width={24} height={24} style={{ minWidth: "32px" }} />
+                      <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                        {openText}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openAddTask(actionMenuRow);
+                        setActionMenuRow(null);
+                      }}
+                      className="flex items-center gap-4 px-6 py-3 text-left"
+                      style={{ background: "transparent", border: "none", cursor: "pointer" }}
+                    >
+                      <Image
+                        src={taskIcon}
+                        alt={t("addTask")}
+                        width={15}
+                        height={15}
+                        style={{ minWidth: "32px", width: "20px", height: "20px", objectFit: "contain" }}
+                      />
+                      <span style={{ fontSize: "17px", color: "rgba(0,0,0,0.9)", lineHeight: 1.4 }}>
+                        {addTaskText}
+                      </span>
+                    </button>
+                  </>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => {
@@ -4174,42 +4310,17 @@ const fetchDocs = useCallback(
           </div>
         </div>
       )}
-      {previewUrl && (
-        <div
-          className="fixed inset-0 z-[999] flex items-center justify-center"
-          style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
-          onClick={() => {
-            setPreviewUrl(undefined);
-            setPreviewName(null);
-          }}
-        >
-          <div
-            className="pit-card max-w-4xl w-[90vw] h-[80vh] relative border border-[rgba(0,0,0,0.12)] bg-[rgba(247,243,236,0.96)]"
-            style={{ transform: "translateY(-4%)" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-center py-2">
-              <span
-                style={{
-                  width: "56px",
-                  height: "5px",
-                  borderRadius: "999px",
-                  background: "rgba(0,0,0,0.2)",
-                  display: "inline-block",
-                }}
-              />
-            </div>
-            <div className="flex items-center justify-between mb-3" />
-            <div className="h-[calc(100%-48px)]">
-              <iframe
-                src={previewUrl}
-                title="preview"
-                className="w-full h-full rounded-lg border border-[rgba(255,255,255,0.05)]"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <MediaViewer
+        isOpen={Boolean(previewUrl)}
+        src={previewUrl ?? ""}
+        type={previewIsImage ? "image" : "pdf"}
+        filename={previewName ?? undefined}
+        downloadUrl={previewUrl ?? undefined}
+        onClose={() => {
+          setPreviewUrl(undefined);
+          setPreviewName(null);
+        }}
+      />
       {isMounted && taskModal
         ? createPortal(
             <div
@@ -4236,30 +4347,30 @@ const fetchDocs = useCallback(
                 </div>
                 <div className="flex items-center justify-between mb-4">
                   <p className="pit-title" style={{ fontSize: "18px" }}>
-                    New task
+                    {t("newTaskTitle")}
                   </p>
                 </div>
                 <div className="flex flex-col gap-3">
                   <label className="flex flex-col gap-1">
-                    <span className="pit-subtitle text-xs uppercase tracking-wide">Title</span>
+                    <span className="pit-subtitle text-xs">{t("taskTitleLabel")}</span>
                     <input
                       className="pit-input"
                       value={taskModal?.title ?? ""}
                       onChange={(e) => setTaskModal((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
-                      placeholder="What needs to be done?"
+                      placeholder={t("taskPlaceholder")}
                     />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="pit-subtitle text-xs uppercase tracking-wide">Due date</span>
+                    <span className="pit-subtitle text-xs">{t("taskDueDateLabel")}</span>
                     <input
                       className="pit-input"
                       type="date"
                       value={taskModal?.due ?? ""}
                       onChange={(e) => setTaskModal((prev) => (prev ? { ...prev, due: e.target.value } : prev))}
-                    />
+                  />
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="pit-subtitle text-xs uppercase tracking-wide">{t("urgency")}</span>
+                    <span className="pit-subtitle text-xs">{t("urgency")}</span>
                     <select
                       className="pit-input"
                       value={taskModal?.urgency ?? "normal"}
@@ -4284,11 +4395,11 @@ const fetchDocs = useCallback(
             document.body
           )
         : null}
-            {isMounted && chatForDoc
-              ? createPortal(
-                  <div
-              className="fixed inset-0 z-[999] flex items-start justify-center p-4 pt-4 md:pt-8"
-              style={{ backdropFilter: "blur(6px)", backgroundColor: "rgba(245,240,232,0.6)" }}
+      {isMounted && chatForDoc
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[999]"
+              style={{ backdropFilter: "blur(8px)", backgroundColor: "rgba(12,12,12,0.35)" }}
               onClick={() => {
                 if (!chatLoading) {
                   setChatForDoc(null);
@@ -4298,79 +4409,176 @@ const fetchDocs = useCallback(
               }}
             >
               <div
-              className="pit-card w-full max-w-2xl max-h-[96vh] min-h-[78vh] flex flex-col border border-[rgba(0,0,0,0.12)] bg-[rgba(247,243,236,0.96)]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-center py-2">
-                <span
-                  style={{
-                    width: "56px",
-                    height: "5px",
-                    borderRadius: "999px",
-                      background: "rgba(0,0,0,0.2)",
-                      display: "inline-block",
-                    }}
-                  />
-                </div>
-                <div className="flex items-center justify-between mb-3" />
-                <div className="flex-1 overflow-y-auto flex flex-col gap-2 px-1 pb-1">
-                  {chatLoading && chatMessages.length === 0 ? (
-                    <p className="pit-muted text-sm">{uiText.loading[lang] || uiText.loading.en}</p>
-                  ) : chatMessages.length === 0 ? (
-                    <p className="pit-muted text-sm">{uiText.ask[lang] || uiText.ask.en}</p>
-                  ) : (
-                    chatMessages.map((m, idx) => (
-                      <div
-                        key={`${chatForDoc}-msg-${idx}`}
-                        className="text-sm"
-                        style={{ color: m.role === "assistant" ? "rgba(0,0,0,0.85)" : "rgba(0,0,0,0.7)" }}
-                      >
-                        <strong style={{ marginRight: 6 }}>{m.role === "assistant" ? "Assistant" : "You"}:</strong>
-                        <span>{m.content}</span>
-                      </div>
-                    ))
-                  )}
-                  {chatError && <p className="pit-error text-xs">{chatError}</p>}
-                </div>
-                <div className="mt-3 relative w-full">
-                  <textarea
-                    className="pit-input"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder={uiText.placeholder[lang] || uiText.placeholder.en}
-                    rows={5}
+                className="absolute inset-x-0 bottom-0 flex justify-center px-3 pb-3 sm:px-5 sm:pb-5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div
+                className="w-full max-w-[720px] pit-radius-xl pit-shadow-2 flex flex-col overflow-hidden"
+                style={{
+                  background: "linear-gradient(145deg, #f7f1e4 0%, #f3ebdd 100%)",
+                  border: "1px solid rgba(0,0,0,0.06)",
+                  maxHeight: "88vh",
+                }}
+              >
+                  <div className="flex flex-col gap-3 sticky top-0 z-10 px-4 pt-4 pb-2" style={{ background: "linear-gradient(145deg, #f7f1e4 0%, #f3ebdd 100%)" }}>
+                    <div className="flex items-center justify-center py-1">
+                      <span
+                        style={{
+                          width: "56px",
+                          height: "5px",
+                          borderRadius: "999px",
+                          background: "rgba(0,0,0,0.14)",
+                          display: "inline-block",
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[14px]" style={{ color: "rgba(0,0,0,0.8)" }}>
+              <div className="flex items-center gap-2">
+                <Image src={clarityIcon} alt="Clarity" width={22} height={22} />
+                <span style={{ fontFamily: "Georgia, serif", fontSize: "16px", lineHeight: 1.1, display: "inline-flex", alignItems: "center" }}>
+                  {uiText.title[lang] || uiText.title.en}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={clearDocChat}
+                disabled={chatLoading}
+                aria-label="Reset chat"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: chatLoading ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "2px",
+                  opacity: 0.75,
+                }}
+              >
+                <Image src={resetIcon} alt="Reset chat" width={18} height={18} style={{ opacity: 0.85 }} />
+              </button>
+            </div>
+          </div>
+                  <div
+                    className="flex-1 overflow-y-auto px-4 pb-3"
                     style={{
-                      resize: "none",
-                      minHeight: 170,
-                      maxHeight: 170,
-                      overflowY: "auto",
-                      paddingBottom: "48px",
-                      paddingRight: "48px",
+                      paddingTop: 6,
+                      gap: "12px",
+                      display: "flex",
+                      flexDirection: "column",
                     }}
-                  />
-                  <button
-                    onClick={sendChat}
-                    disabled={chatLoading || !chatInput.trim()}
-                    style={{
-                      ...kindleButtonStyle,
-                      height: 32,
-                      width: 32,
-                      padding: 0,
-                      borderRadius: "50%",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      position: "absolute",
-                      right: 8,
-                      bottom: 8,
-                      opacity: chatLoading || !chatInput.trim() ? 0.6 : 1,
-                      cursor: chatLoading || !chatInput.trim() ? "not-allowed" : "pointer",
-                      letterSpacing: 0,
-                    }}
-                    aria-label={t("send") || "Send"}
+                    ref={chatScrollRef}
                   >
-                    <span style={{ fontSize: "15px", lineHeight: 1 }}>↑</span>
-                  </button>
+                    {chatLoading && chatMessages.length === 0 ? (
+                      <p className="pit-muted text-sm" style={{ fontFamily: "Inter, sans-serif" }}>
+                        {uiText.loading[lang] || uiText.loading.en}
+                      </p>
+                    ) : chatMessages.length === 0 ? (
+                      <p
+                        style={{
+                          fontFamily: "Georgia, serif",
+                          fontSize: "16px",
+                          color: "rgba(0,0,0,0.8)",
+                        }}
+                      >
+                        {uiText.ask[lang] || uiText.ask.en}
+                      </p>
+                    ) : (
+                      chatMessages.map((m, idx) => (
+                        <div
+                          key={`${chatForDoc}-msg-${idx}`}
+                          style={{
+                            background: m.role === "assistant" ? "rgba(0,0,0,0.035)" : "rgba(0,0,0,0.05)",
+                            borderRadius: "14px",
+                            padding: "10px 12px",
+                            maxWidth: "72ch",
+                            fontFamily: "Georgia, serif",
+                            fontSize: "16px",
+                            lineHeight: 1.6,
+                            color: "rgba(0,0,0,0.85)",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontFamily: "Inter, sans-serif",
+                              fontSize: "12px",
+                              letterSpacing: "0.01em",
+                            color: "rgba(0,0,0,0.5)",
+                            marginBottom: 4,
+                          }}
+                        >
+                            {m.role === "assistant" ? "Clarity" : "Du"}
+                          </div>
+                          <div>{m.content}</div>
+                        </div>
+                      ))
+                    )}
+                    {chatError && (
+                      <p className="pit-error text-xs" style={{ fontFamily: "Inter, sans-serif" }}>
+                        {chatError}
+                      </p>
+                    )}
+                  </div>
+                  <div
+                    className="px-4 pb-4 pt-2"
+                    style={{
+                      borderTop: "1px solid rgba(0,0,0,0.05)",
+                      background: "linear-gradient(145deg, #f2eadb 0%, #f8f3e8 100%)",
+                    }}
+                  >
+                    <div
+                      className="relative w-full rounded-2xl"
+                      style={{
+                        background: "rgba(0,0,0,0.03)",
+                        border: "1px solid rgba(0,0,0,0.08)",
+                        boxShadow: "inset 0 1px 3px rgba(0,0,0,0.05)",
+                      }}
+                    >
+                      <textarea
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder={uiText.placeholder[lang] || uiText.placeholder.en}
+                        rows={3}
+                        className="w-full resize-none rounded-2xl bg-transparent px-4 py-3"
+                        style={{
+                          fontFamily: "Georgia, serif",
+                          fontSize: "15px",
+                          color: "rgba(0,0,0,0.82)",
+                          minHeight: 120,
+                          maxHeight: 140,
+                          overflowY: "auto",
+                        }}
+                      />
+                      <button
+                        onClick={sendChat}
+                        disabled={chatLoading || !chatInput.trim()}
+                        style={{
+                          height: 40,
+                          width: 40,
+                          borderRadius: "999px",
+                          position: "absolute",
+                          right: 12,
+                          bottom: 12,
+                          border: "1px solid rgba(0,0,0,0.1)",
+                          background: chatInput.trim() && !chatLoading ? "rgba(0,0,0,0.08)" : "rgba(0,0,0,0.04)",
+                          color: "rgba(0,0,0,0.7)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          cursor: chatLoading || !chatInput.trim() ? "not-allowed" : "pointer",
+                        }}
+                        aria-label={t("send") || "Send"}
+                      >
+                        {chatLoading ? (
+                          <span className="animate-spin" style={{ fontSize: 16 }}>
+                            ⟳
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 16, lineHeight: 1 }}>↑</span>
+                        )}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>,

@@ -155,10 +155,21 @@ Update the extraction step so the model returns **only JSON** like:
 
 ```json
 {
-  "summary": "Short human-readable summary of the document.",
+  "summary": "Meaning-only gist for the card (1–2 short sentences, no ellipses).",
+  "main_summary": "Optional longer meaning-only explanation (2–4 sentences) or null.",
+  "badge_text": null,
+  "extra_details": [
+    "Total: 23.94 EUR - total amount",
+    "Direct debit: 2025-11-11 - money leaves your bank"
+  ],
   "document_kind": "letter | invoice | contract | notice | info | other",
   "key_fields": {
     "language": "de",
+    "issuer_short": "TK",
+    "issuer_legal": "Techniker Krankenkasse",
+    "document_date": "2025-02-01",
+    "billing_period": null,
+    "document_kind_fine": "Beitragsanpassung",
     "sender": "Techniker Krankenkasse",
     "topic": "Beitragsanpassung 2025",
     "letter_date": "2025-02-01",
@@ -166,13 +177,66 @@ Update the extraction step so the model returns **only JSON** like:
     "amount_total": 123.45,
     "currency": "EUR",
     "action_required": true,
-    "action_description": "Pay 123.45 EUR by 28.02.2025.",
+    "action_description": null,
     "reference_ids": {
-      "steuernummer": null,
-      "kundennummer": null,
-      "vertragsnummer": null
+      "invoice_number": null,
+      "customer_number": "123456789",
+      "contract_number": null,
+      "case_number": null,
+      "tax_number": null,
+      "aktenzeichen": null,
+      "kundennummer": "123456789",
+      "vorgangsnummer": null,
+      "iban": "DE...",
+      "bic": null,
+      "mandate_reference": null
     }
   },
+  "deadlines": [
+    {
+      "id": "d1",
+      "date_exact": "2025-02-28",
+      "relative_text": null,
+      "kind": "payment",
+      "description": "Pay the amount to avoid late fees",
+      "is_hard_deadline": true,
+      "source_snippet": "Bitte zahlen Sie bis 28.02.2025 ...",
+      "confidence": 0.9
+    }
+  ],
+  "amounts": [
+    {
+      "value": 123.45,
+      "currency": "EUR",
+      "direction": "you_pay",
+      "frequency": "one_off",
+      "description": "Amount due",
+      "source_snippet": "Betrag 123,45 €",
+      "confidence": 0.9
+    }
+  ],
+  "actions_required": [
+    {
+      "id": "a1",
+      "label": "Check direct debit amount",
+      "description": "€123.45, Techniker Krankenkasse - to avoid late fees",
+      "due_date": "2025-02-28",
+      "severity": "high",
+      "is_blocking": true,
+      "source_snippet": "Bitte prüfen Sie ...",
+      "confidence": 0.8
+    }
+  ],
+  "required_documents": [
+    {
+      "id": "rd1",
+      "description": "Provide proof of income for 2024",
+      "where_how": "Upload via portal (link on page 2) or send by mail to the address above",
+      "related_deadline_ids": ["d1"],
+      "source_snippet": "Bitte reichen Sie ... ein",
+      "confidence": 0.7
+    }
+  ],
   "category_suggestion": {
     "path": ["Finanzen", "Steuern"],
     "confidence": 0.9
@@ -185,14 +249,30 @@ Update the extraction step so the model returns **only JSON** like:
     "urgency": "high"
   }
 }
+```
 
-
-
-Additonal conversation:
 Notes:
-	•	The model must always return valid JSON with those keys, using null where info is missing.
-	•	category_suggestion.path is an array from top-level to leaf (no user-specific categories baked in; just generic names).
-	•	For non-letters (e.g. contracts, info documents), it should still try to suggest a reasonable path, e.g. ["Job / Verträge"], ["Versicherung"], ["Sonstiges"].
+			•	The model must always return valid JSON with those keys, using null where info is missing.
+			•	Two-layer extraction: the backend extracts deterministic candidates (dates/amounts/IDs/IBAN/BIC/email/phone) and passes them to the model; for those fields the model must copy an exact candidate value or return null (never invent).
+			•	Language: Write all generated text in the chosen output language (summary/main_summary/badge_text/extra_details/action_description/follow_up). Translate from the letter; only keep short official terms (program names, legal labels) in the source language when needed. Do not copy full sentences in the source language.
+			•	Date format: Whenever you mention calendar dates in any generated text field, use ISO `YYYY-MM-DD` (and ranges as `YYYY-MM-DD to YYYY-MM-DD`). The UI will display dates in a human format (e.g. `06.11.2025` in German, `6 Nov 2025` in English; ranges like `01.11–30.11.2025`).
+			•	Deadlines: If a deadline is only given relatively (e.g. “within one month after Bekanntgabe”), set `date_exact=null` and put the phrase into `relative_text`. Do not drop it just because there is no exact date.
+			•	`summary` must explain meaning only and must not repeat to-dos or deadlines when `action_required=true`. Tasks come from `actions_required`.
+			•	When `action_required=false`, do not add a separate “No action required” sentence to `summary` - action state is represented by `action_required`/tasks in the UI.
+			•	Think as the recipient: surface the 2–6 most important facts the user needs (what is happening, why, key dates/amounts/actions). If more than 6 genuinely critical facts exist, include them; otherwise prefer 2–6. If the document explains a change/decision/termination, include the stated reason/justification as one of those facts (short clause, <=120 chars). No new fields—map to existing fields (amounts, deadlines, extra_details).
+			•	If a termination/change/decision is described, explicitly extract the stated reason/justification and include it in `extra_details` as `Reason/Begründung: <short reason> - what it means` (<=120 chars). Do not guess; use the letter’s wording or return null.
+			•	Contact fields: `contact_person`/`contact_phone`/`contact_email` must describe how to reach the **sender** (caseworker/department/service line). Never use the recipient/user name from the address block; if unclear, return null.
+				•	`extra_details` should be user-relevant key facts (4–6 max) in short “Label: value - what it means” form, written for a stressed/overwhelmed human.
+					•	The explanation after `-` must be one simple full sentence (no fragments, no slashes like ` / `, no trailing `...`).
+					•	The `value` must be atomic and type-correct: a money amount with currency, an ISO date (`YYYY-MM-DD`), or a period (`YYYY-MM` or `YYYY-MM-DD to YYYY-MM-DD`).
+					•	If the label implies a time period (Zeitraum/period/coverage/Sperrzeit/Ruhezeit), the `value` must be a period (`YYYY-MM` or `YYYY-MM-DD to YYYY-MM-DD`), not just a single start date.
+					•	Do not put a date as the value for an amount label; keep the amount as the value and put the date in the explanation.
+					•	Avoid duplicates (don’t restate the same amount/date with different labels); avoid low-value clutter (shipping cost 0, VAT rates, product/model codes, document date if the title already shows it).
+				•	Do **not** include IDs/PII; put those into `reference_ids` (and the UI can choose to hide them).
+			•	If the document is informational/confirmation/already-paid or a recurring automatic payment/collection with no user choice/deadline: set `action_required=false`, `actions_required=[]`, and `task_suggestion.should_create_task=false`.
+			•	Appeal rights: Do **not** create tasks just because an appeal/objection is possible. Treat it as information (deadlines[] + key facts). Only suggest an appeal task when there is a negative impact (e.g. Sperrzeit/sanction/reduction/denial/repayment) and the user could reasonably want to challenge it.
+			•	category_suggestion.path is an array from top-level to leaf (no user-specific categories baked in; just generic names).
+			•	For non-letters (e.g. contracts, info documents), it should still try to suggest a reasonable path, e.g. ["Job / Verträge"], ["Versicherung"], ["Sonstiges"].
 
 Update the backend extraction prompt accordingly and keep using response_format: { type: "json_object" }.
 
@@ -230,19 +310,18 @@ Only do this once per user.
 
 Task creation logic
 
-Extend the processing route so that after storing extractions.content and resolving categories, you also handle tasks based on task_suggestion:
-	1.	If task_suggestion.should_create_task is true:
-	•	Insert a row in tasks:
-	•	user_id = document.user_id
-	•	document_id = document.id
-	•	title = task_suggestion.title
-	•	description = task_suggestion.description
-	•	due_date = parsed date or null
-	•	urgency = "high" | "normal" | "low" from suggestion (default to normal)
-	•	If a task already exists for that document (status = 'open'), avoid duplicate tasks (simple check on document_id).
-	2.	If should_create_task is false but we already have open tasks for this doc, do nothing (user might have created them manually later).
-
-We keep task creation mostly automatic but simple.
+Extend the processing route so that after storing extractions.content and resolving categories, you also generate tasks from extracted actions:
+	1.	Primary source: `actions_required[]`
+	•	Create 0–6 tasks per document from `actions_required[]` (verb-first, deduped by normalized title).
+	•	title = action.label
+	•	description = action.description (include 1-line reason/consequence; include amount + counterparty if relevant)
+	•	due_date = action.due_date if ISO (YYYY-MM-DD), else null
+	•	urgency derived from severity (high/medium/low → high/normal/low)
+	2.	Fallbacks:
+	•	If `actions_required[]` is empty and `task_suggestion.should_create_task=true`, create a single task from `task_suggestion`.
+	•	If both are missing but `key_fields.action_required=true`, fall back to `key_fields.action_description`.
+	3.	Strict no-task policy:
+	•	If `action_required=false` or the doc is informational/confirmation/already-paid/autopay with no user choice/deadline, do not create tasks.
 
 ⸻
 
@@ -337,3 +416,51 @@ After each major step, briefly explain in comments or a short markdown note what
 	5.	UI changes: how / and /tasks now present documents and tasks.
 
 Keep explanations short but make sure a developer (or Joel) reading the diff understands why we do each step, not just what changed.
+
+⸻
+
+Files page chat agent (cross-document assistant)
+
+Purpose: a cautious assistant on the Files page that can answer cross-document questions, surface relevant docs, aggregate amounts/dates/tasks, bundle exports, and reorganize files into categories without breaking trust.
+
+Conversation policy (clarify-first):
+	•	Before any heavy operation (aggregation, bundle, bulk move), ask up to 3 clarifying questions if time window, country/profile, business vs private, or case/episode is unclear. Example clarifiers: “Which year or period?”, “Business or personal?”, “Which country profile applies?”, “Is this about the knee injury case?”
+	•	Always state assumptions made; prefer deferring execution over guessing.
+	•	Always show which documents were included, and flag borderline/ambiguous ones separately.
+
+Required answer shape:
+	•	result (answer/summary)
+	•	applied filters + assumptions
+	•	included doc_ids (with short display meta) and any excluded/uncertain docs with reason
+	•	next-step options when relevant (e.g., “Download bundle?”, “Move these to Finanzen > Steuern?”, “Create a follow-up task?”)
+
+Backend tools (conceptual contracts):
+	1) ListDocuments(filters) -> { docs[], applied_filters }
+		•	Filters: time (year/month/range), sender (name/type), topic/profile, case/episode, flags (has_open_tasks, risk_level).
+		•	Outputs: doc_id, title/sender/topic, period dates, category_path, has_open_tasks; include why each doc matched when possible.
+	2) SemanticSearch(query, filters) -> { docs[], matched_spans?, score, reason }
+		•	Supports keyword + embedding over title/summary/tags/raw text; accepts same structured filters; return why-matched text/snippets.
+	3) Aggregate(docs_or_filters, agg_spec) -> { groups[], assumptions }
+		•	Sum/count/group-by (year/category/sender/case); attach doc_ids per group for provenance.
+	4) Tasks(filter) -> { tasks[], sort }
+		•	Filters: due window (e.g., next 30 days), urgency, status, doc_id; include linked doc meta for display.
+	5) BundleExport(doc_ids) -> { bundle_id, download_url, doc_ids, size/count }
+		•	Only after user confirms the set; surface any excluded/ambiguous docs.
+	6) ReorganizeDocuments(doc_ids, new_category_path, create_if_missing=false, confidence?) -> { moved[], created_categories[], skipped[] }
+		•	Moves one or many docs to a category path. Only create missing nodes if user opted in or confirmed. Report from/to paths per doc and any skips with reasons.
+
+Chat UX for reorganizing:
+	•	Present a compact confirmation card: current path → proposed path, doc count, and actions: Move / Adjust / Cancel. Include a toggle/CTA for “create missing categories” when needed.
+	•	For large moves (e.g., 100+ docs) or low confidence, ask for confirmation before calling the tool; if huge, suggest a modal/bulk review but keep inline flow as default.
+	•	After moving, return a diff list (doc title → new path) plus quick links to view.
+
+Execution order guidance:
+	•	Start with structured filters (ListDocuments) to narrow scope; refine with SemanticSearch if needed.
+	•	Run Aggregate only on a confirmed doc set or well-scoped filters.
+	•	Run BundleExport only after the user confirms the list; show size/count before executing.
+	•	Run ReorganizeDocuments only after explicit user intent; never auto-create categories without consent.
+
+Guardrails:
+	•	No tax/legal certainty; use “likely relevant, please verify.”
+	•	Cap heavy operations; explain if the result set was truncated or paginated.
+	•	Respect language/profile preferences when summarizing answers.
