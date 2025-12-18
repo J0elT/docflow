@@ -24,6 +24,7 @@ Format inspired by `ai-dev-tasks-main/generate-tasks.md`. Keep items atomic: one
   - [ ] 1.1 Support PNG/JPEG uploads end-to-end (storage + processing)
   - [ ] 1.2 Reduce image size safely (fast uploads, readable text)
   - [ ] 1.3 Hardening: multi-page PDFs, timeouts, and clear error states
+    - [x] 1.3a Block processing above PDF hard page cap with user-visible guidance
 
 - [ ] 2.0 Language support
   - [ ] 2.1 Preferred language setting (profile/settings + persistence)

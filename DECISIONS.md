@@ -37,6 +37,7 @@ Decisions should be:
 | 2025-12-18 | Assistant chat history: minimal per-session storage, no summaries | Token-based rolling window only (Galaxy global session; Clarity per-document session) in Supabase with strict RLS; no cross-session recall or summaries; no idle TTL; user can clear history; Clarity chat deletes with its doc; signed URLs not persisted (recreated at render time). | JT |
 | 2025-12-18 | Bundle downloads: stable internal link | Store bundle zips under `${userId}/bundles/` and persist only an internal `/bundles/download?name=...` link; signed URLs are generated on demand. | JT |
 | 2025-12-18 | Scanning: capture-time quality gate + OCR presets + multi-page stack | OCR quality is mostly decided at capture time; enforce retakes for low quality and make multi-page assembly predictable before uploading as one document. | JT |
+| 2025-12-19 | Processing: hash reuse + page caps + model tiering + telemetry | Reduce processing latency/cost by skipping unchanged files, capping OCR pages, and routing large docs to fast text models with timing telemetry. | JT |
 
 ---
 
@@ -687,3 +688,57 @@ Decisions should be:
 
 **Links**
 - Plan entry: `Plan.md#2025-12-18-—-FEATURE:-World-class-scanning-(quality-gated-multi-page-stack)`
+
+## 2025-12-19 — Processing: hash reuse + page caps + model tiering + telemetry
+
+**Context**
+- Processing large or scanned PDFs was slow because OCR/vision rendered every page and model calls ran on full inputs.
+- Reprocessing unchanged files wasted time; no timing telemetry existed to measure bottlenecks.
+
+**Options considered**
+- Keep current processing (simple, but slow for large/scanned PDFs).
+- Add page caps + text-page skipping + model tiering + hash reuse with minimal DB changes.
+- Introduce a background queue and progressive batching (rejected for now).
+
+**Decision**
+- Add file-hash reuse with a force override for reprocess.
+- Cap PDF OCR/vision rendering and skip pages with meaningful text before OCR.
+- Route large documents to a fast text model with fallback to the default model.
+- Log timing/page telemetry for visibility into bottlenecks.
+
+**Consequences**
+- Good: faster processing for large/scanned PDFs; fewer redundant reprocesses; actionable timing data.
+- Tradeoffs: hard caps can omit late pages; text-page skipping uses heuristics; large-doc model tiering may reduce quality.
+
+**Evidence**
+- Tests run:
+  - `NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts`
+
+**Links**
+- Plan entry: `Plan.md#2025-12-19-—-FEATURE:-Processing-speed-optimizations-(caps,-hash-reuse,-telemetry)`
+
+## 2025-12-19 — Processing: block above hard page cap with a user-visible summary
+
+**Context**
+- Very large PDFs produced odd key facts because we truncated text and capped OCR/vision pages, so the model saw partial context.
+- Returning a hard error hides the document in the UI, which is worse than showing a clear “split this document” message.
+
+**Options considered**
+- Keep partial processing with caps and accept degraded key facts.
+- Hard fail with status error + 413 response (document disappears from the UI).
+- Skip extraction when page count exceeds the hard cap, but still create a minimal extraction that tells the user to split.
+
+**Decision**
+- When `DOCFLOW_PDF_HARD_CAP_BLOCK` is enabled and page count exceeds `DOCFLOW_PDF_PAGE_HARD_CAP`, skip OCR/vision and create a minimal extraction with a clear “document too long” summary + badge.
+- Keep document status `done` (so it remains visible), avoid renaming/categorization based on the placeholder, and log telemetry as `skipped` with `skipReason=page_cap`.
+
+**Consequences**
+- Good: users get immediate, visible guidance instead of misleading key facts; processing time/cost is avoided for oversize documents.
+- Tradeoffs: no extraction for oversize PDFs until they are split; requires clear UI messaging to avoid confusion.
+
+**Evidence**
+- Tests run:
+  - `NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts`
+
+**Links**
+- Plan entry: `Plan.md#2025-12-19-—-BUGFIX:-Block-oversize-PDF-processing`

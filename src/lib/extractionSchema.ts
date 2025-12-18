@@ -179,7 +179,7 @@ export const extractionSchema = z
     risk_level: z.string().nullable().optional(),
     uncertainty_flags: z.array(z.string()).nullable().optional(),
     comments_for_user: z.string().nullable().optional(),
-    field_confidence: z.record(z.number()).nullable().optional(),
+    field_confidence: z.record(z.number().nullable()).nullable().optional(),
   })
   .passthrough();
 

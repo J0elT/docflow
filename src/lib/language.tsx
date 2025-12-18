@@ -166,6 +166,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     processingLongAction: "Refresh",
     processingTitle: "Processing",
     uploadHint: "PDF, DOC/DOCX, TXT, PNG, or JPEG. Max 25MB; images are optimized before upload.",
+    pageCapToast: "This app doesn't process documents over {count} pages.",
     paste: "Paste",
     unsupportedType: "Unsupported file type. Please upload PDF, DOC, DOCX, TXT, PNG, or JPEG.",
     fileTooLarge: "File is too large. Please keep uploads under 25MB.",
@@ -324,6 +325,7 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     processingTitle: "Wird bearbeitet",
     uploadHint:
       "PDF, DOC/DOCX, TXT, PNG oder JPEG. Max. 25MB; Bilder werden vor dem Upload optimiert.",
+    pageCapToast: "Diese App verarbeitet keine Dokumente mit mehr als {count} Seiten.",
     paste: "Einfügen",
     unsupportedType:
       "Dateityp nicht unterstützt. Bitte lade PDF, DOC, DOCX, TXT, PNG oder JPEG hoch.",

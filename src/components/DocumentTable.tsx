@@ -118,6 +118,7 @@ type TableRow = {
   reference_ids?: string[];
   reference_id_entries?: { key: string; value: string }[];
   workflow_status?: string | null;
+  skip_reason?: string | null;
 };
 
 type Props = {
@@ -270,6 +271,8 @@ export default function DocumentTable({
   const [chatError, setChatError] = useState<string | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
   const kindleButtonStyle: React.CSSProperties = {
     padding: "10px 18px",
     borderRadius: "14px",
@@ -280,6 +283,16 @@ export default function DocumentTable({
     fontSize: "13px",
     textTransform: "uppercase",
     color: "rgba(20,20,20,0.9)",
+  };
+  const titleClampStyle: React.CSSProperties = {
+    wordBreak: "break-word",
+    overflowWrap: "anywhere",
+    paddingRight: "40px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    display: "-webkit-box",
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: "vertical",
   };
 
   const handleCopy = useCallback(async (key: string, value: string) => {
@@ -293,6 +306,35 @@ export default function DocumentTable({
       console.warn("copy failed", err);
     }
   }, []);
+
+  const showToast = useCallback((message: string, duration = 5000) => {
+    if (!message) return;
+    setToastMessage(message);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, duration);
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string; duration?: number }>).detail;
+      const message = typeof detail?.message === "string" ? detail.message : "";
+      const duration = typeof detail?.duration === "number" ? detail.duration : 5000;
+      showToast(message, duration);
+    };
+    window.addEventListener("docflow:toast", handler as EventListener);
+    return () => {
+      window.removeEventListener("docflow:toast", handler as EventListener);
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, [showToast]);
 
   // Auto-collapse expanded paths after a short delay to avoid clutter.
   useEffect(() => {
@@ -528,11 +570,16 @@ export default function DocumentTable({
       const res = await fetch("/api/process-document", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentId: row.id, preferredLanguage: lang }),
+        body: JSON.stringify({ documentId: row.id, preferredLanguage: lang, force: true }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `Failed to reprocess (status ${res.status})`);
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data?.skipReason === "page_cap") {
+        const capValue = typeof data?.hardCap === "number" ? data.hardCap : 60;
+        showToast(t("pageCapToast", { count: capValue }));
       }
       // Trigger refresh to pick up new extraction/category
       fetchDocs(true);
@@ -2033,10 +2080,16 @@ const fetchDocs = useCallback(
               typeof (latest as any)?.badge_text === "string" && (latest as any)?.badge_text?.trim()
                 ? ((latest as any)?.badge_text as string).trim()
                 : null;
-	            const extraDetails =
-	              Array.isArray((latest as any)?.extra_details) && (latest as any)?.extra_details.length
-	                ? ((latest as any)?.extra_details as string[]).filter(
-	                    (s) => typeof s === "string" && s.trim().length > 0
+            const skipReasonRaw =
+              typeof (latest as any)?.meta?.skip_reason === "string"
+                ? ((latest as any)?.meta?.skip_reason as string).trim()
+                : typeof (latest as any)?.meta?.skipReason === "string"
+                  ? ((latest as any)?.meta?.skipReason as string).trim()
+                  : null;
+            const extraDetails =
+              Array.isArray((latest as any)?.extra_details) && (latest as any)?.extra_details.length
+                ? ((latest as any)?.extra_details as string[]).filter(
+                    (s) => typeof s === "string" && s.trim().length > 0
 	                  )
 	                : [];
 	            const documentDate =
@@ -2249,12 +2302,13 @@ const fetchDocs = useCallback(
 	                ((latest as any)?.key_fields?.workflow_status as string).trim()
 	                  ? ((latest as any)?.key_fields?.workflow_status as string).trim()
                   : null,
+                skip_reason: skipReasonRaw || null,
             };
           }) ?? [];
 
-        const fetched = mapped.filter((r) => r.status !== "error");
+        const fetched = mapped.filter((r) => r.status !== "error" && r.skip_reason !== "page_cap");
         const fetchedPaths = new Set(
-          fetched.map((r) => (r.storage_path ? r.storage_path.toLowerCase() : ""))
+          mapped.map((r) => (r.storage_path ? r.storage_path.toLowerCase() : ""))
         );
         const optimisticKeep = optimisticRows.filter((o) => {
           if (!o.storage_path) return true;
@@ -2539,18 +2593,8 @@ const fetchDocs = useCallback(
                     </button>
                   </div>
                   <div className="flex items-start justify-between gap-3 pr-4">
-                    <div className="flex flex-col gap-1" style={{ flex: 1 }}>
-                      <div
-                        className="font-medium"
-                        style={{
-                          wordBreak: "break-word",
-                          paddingRight: "32px",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          display: "block",
-                        }}
-                      >
+                    <div className="flex flex-col gap-1" style={{ flex: 1, minWidth: 0 }}>
+                      <div className="font-medium" style={titleClampStyle}>
                         {displayTitle}
                       </div>
                       <div className="flex items-center gap-2" style={{ marginTop: "10px" }}>
@@ -2619,9 +2663,9 @@ const fetchDocs = useCallback(
                   <div className="flex flex-wrap items-start justify-between gap-3 pr-1">
                       <div
                         className="flex flex-col gap-1"
-                        style={{ flex: 1, paddingBottom: mode === "files" ? "8px" : "4px" }}
-	                      >
-	                        <div className="font-medium">{displayTitle}</div>
+                        style={{ flex: 1, minWidth: 0, paddingBottom: mode === "files" ? "8px" : "4px" }}
+                      >
+                        <div className="font-medium" style={titleClampStyle}>{displayTitle}</div>
 	                        {statusLine ? (
 	                          <div
 	                            className="text-xs"
@@ -3037,18 +3081,8 @@ const fetchDocs = useCallback(
                 <td className="align-top text-left">
                     <div className="flex flex-col gap-2">
                     <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <div
-                          className="font-medium"
-                          style={{
-                            wordBreak: "break-word",
-                            paddingRight: "32px",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            display: "block",
-                          }}
-                        >
+                      <div className="flex flex-wrap items-center gap-3" style={{ minWidth: 0 }}>
+                        <div className="font-medium" style={titleClampStyle}>
                           {displayTitle}
                         </div>
                         <button
@@ -4124,6 +4158,25 @@ const fetchDocs = useCallback(
 
   return (
     <div className="w-full">
+      {toastMessage ? (
+        <div className="fixed inset-x-0 top-4 z-[90] flex justify-center px-4 pointer-events-none">
+          <div
+            className="pit-radius-lg pit-shadow-2"
+            style={{
+              background: "rgba(25,20,16,0.92)",
+              color: "rgba(247,243,236,0.98)",
+              padding: "10px 16px",
+              border: "1px solid rgba(255,255,255,0.12)",
+              fontSize: "13px",
+              letterSpacing: "0.01em",
+              maxWidth: "560px",
+              textAlign: "center",
+            }}
+          >
+            {toastMessage}
+          </div>
+        </div>
+      ) : null}
       {isHome ? (
         <div className="flex flex-col gap-4">
           {processingRows.length > 0 ? (

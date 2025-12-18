@@ -1489,10 +1489,30 @@ export async function POST(request: Request) {
   let documentId: string | null = null;
   let extractionSource: "text-model" | "vision-model" | "ocr-text" = "text-model";
   let usedPdfOcrFallback = false;
+  const timings: Record<string, number> = {};
+  const totalStart = Date.now();
+  let renderStats: {
+    pageCount?: number;
+    renderedPages?: number;
+    skippedTextPages?: number;
+    capped?: boolean;
+  } = {};
+  let fileHash: string | null = null;
+  let skipReason: string | null = null;
+  let pageCapMessage: string | null = null;
+  const timed = async <T,>(label: string, fn: () => Promise<T>) => {
+    const start = Date.now();
+    try {
+      return await fn();
+    } finally {
+      timings[label] = (timings[label] ?? 0) + (Date.now() - start);
+    }
+  };
 
   try {
     const body = await request.json().catch(() => null);
     const incomingId = body?.documentId;
+    const force = Boolean(body?.force);
     const preferredLanguage: SupportedLang = SUPPORTED_LANGUAGES.includes(
       body?.preferredLanguage as SupportedLang
     )
@@ -1522,13 +1542,50 @@ export async function POST(request: Request) {
       .eq("id", doc.id);
     if (updating) throw updating;
 
-    const { data: fileData, error: downloadError } = await supabase.storage
-      .from("documents")
-      .download(doc.storage_path);
-    if (downloadError) throw downloadError;
-    if (!fileData) throw new Error("File missing in storage");
+    const fileData = await timed("download_ms", async () => {
+      const { data, error: downloadError } = await supabase.storage
+        .from("documents")
+        .download(doc.storage_path);
+      if (downloadError) throw downloadError;
+      if (!data) throw new Error("File missing in storage");
+      return data;
+    });
 
     const buffer = Buffer.from(await fileData.arrayBuffer());
+    const { createHash } = await import("node:crypto");
+    fileHash = createHash("sha256").update(buffer).digest("hex");
+
+    if (!force) {
+      const { data: existingRows, error: existingError } = await supabase
+        .from("extractions")
+        .select("content, created_at")
+        .eq("document_id", doc.id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (existingError) throw existingError;
+      const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+      const existingHash =
+        (existing as any)?.content?.source_hash || (existing as any)?.content?.meta?.source_hash;
+      if (existingHash && existingHash === fileHash) {
+        await supabase
+          .from("documents")
+          .update({ status: "done", error_message: null })
+          .eq("id", doc.id);
+        timings.total_ms = Date.now() - totalStart;
+        await logTelemetryEvent({
+          timestamp: new Date().toISOString(),
+          kind: "process-document",
+          status: "skipped",
+          documentId: doc.id,
+          userId: doc.user_id,
+          model: extractionSource,
+          usedOcrFallback: usedPdfOcrFallback,
+          skipReason: "hash_match",
+          timings_ms: timings,
+        });
+        return NextResponse.json({ ok: true, skipped: true, skipReason: "hash_match" });
+      }
+    }
     const lowerPath = doc.storage_path.toLowerCase();
     const isPdf = lowerPath.endsWith(".pdf");
     const isImage = /\.(png|jpe?g)$/i.test(lowerPath);
@@ -1536,21 +1593,31 @@ export async function POST(request: Request) {
     let textContent = "";
     let renderedImages: string[] | null = null;
     if (isPdf) {
-      const { PDFParse } = await import("pdf-parse");
-      // Point pdf.js worker to the on-disk module using a file:// URL to avoid bundler path issues.
-      const path = await import("node:path");
-      const { pathToFileURL } = await import("node:url");
-      const workerPath = path.join(
-        process.cwd(),
-        "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
-      );
-      PDFParse.setWorker(pathToFileURL(workerPath).toString());
+      textContent = await timed("text_extract_ms", async () => {
+        const { PDFParse } = await import("pdf-parse");
+        // Point pdf.js worker to the on-disk module using a file:// URL to avoid bundler path issues.
+        const path = await import("node:path");
+        const { pathToFileURL } = await import("node:url");
+        const workerPath = path.join(
+          process.cwd(),
+          "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
+        );
+        PDFParse.setWorker(pathToFileURL(workerPath).toString());
 
-      const parser = new PDFParse({ data: buffer });
-      const parsed = await parser.getText();
-      textContent = parsed.text;
+        const parser = new PDFParse({ data: buffer });
+        const parsed = await parser.getText();
+        const parsedMeta = parsed as { numpages?: number; numPages?: number };
+        const numpages =
+          typeof parsedMeta.numpages === "number"
+            ? parsedMeta.numpages
+            : typeof parsedMeta.numPages === "number"
+              ? parsedMeta.numPages
+              : null;
+        if (numpages) renderStats.pageCount = numpages;
+        return parsed.text;
+      });
     } else if (!isImage) {
-      textContent = buffer.toString("utf8");
+      textContent = await timed("text_extract_ms", async () => buffer.toString("utf8"));
     }
 
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -1564,8 +1631,70 @@ export async function POST(request: Request) {
     // Default vision/OCR to a vision-capable model to avoid text-only failures on image_url payloads.
     const PROCESS_VISION_MODEL = process.env.DOCFLOW_PROCESS_VISION_MODEL || "gpt-4o";
     const PROCESS_VISION_FALLBACK_MODEL = process.env.DOCFLOW_PROCESS_VISION_FALLBACK_MODEL || "gpt-4o-mini";
+    const PROCESS_TEXT_MODEL_LARGE =
+      process.env.DOCFLOW_PROCESS_TEXT_MODEL_LARGE || PROCESS_TEXT_FALLBACK_MODEL;
+    const PDF_PAGE_SOFT_CAP = Number(process.env.DOCFLOW_PDF_PAGE_SOFT_CAP ?? 30);
+    const PDF_PAGE_HARD_CAP = Number(process.env.DOCFLOW_PDF_PAGE_HARD_CAP ?? 60);
+    const PDF_PAGE_TEXT_MIN = Number(process.env.DOCFLOW_PDF_PAGE_TEXT_MIN ?? 40);
+    const PDF_RENDER_CONCURRENCY = Math.max(
+      1,
+      Number(process.env.DOCFLOW_PDF_RENDER_CONCURRENCY ?? 2)
+    );
+    const OCR_TEXT_PAGE_CAP = Math.max(1, Number(process.env.DOCFLOW_OCR_TEXT_PAGE_CAP ?? 4));
+    const VISION_PAGE_CAP = Math.max(1, Number(process.env.DOCFLOW_VISION_PAGE_CAP ?? PDF_PAGE_HARD_CAP));
+    const TEXT_LONG_CHAR_LIMIT = Math.max(4000, Number(process.env.DOCFLOW_TEXT_LONG_CHAR_LIMIT ?? 20000));
+    const PDF_HARD_CAP_BLOCK =
+      (process.env.DOCFLOW_PDF_HARD_CAP_BLOCK ?? "true").toLowerCase() === "true";
 
-    const callTextModel = async (content: string, preferredLanguage: SupportedLang) => {
+    const getPdfPageCount = async (pdfBuffer: Buffer) => {
+      const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      const path = await import("node:path");
+      const { pathToFileURL } = await import("node:url");
+      const workerPath = path.join(
+        process.cwd(),
+        "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
+      );
+      pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).toString();
+      const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
+      const pdf = await loadingTask.promise;
+      const count = pdf.numPages ?? 0;
+      await pdf.destroy?.();
+      return count || null;
+    };
+
+    if (isPdf && PDF_HARD_CAP_BLOCK && !renderStats.pageCount) {
+      const pageCount = await timed("page_count_ms", () => getPdfPageCount(buffer));
+      if (typeof pageCount === "number") {
+        renderStats.pageCount = pageCount;
+      }
+    }
+
+    const applyPageCapBlock = (pageCount: number | null | undefined) => {
+      if (!pageCount || !PDF_HARD_CAP_BLOCK || pageCount <= PDF_PAGE_HARD_CAP) return false;
+      pageCapMessage =
+        preferredLanguage === "de"
+          ? `Dokument zu lang (${pageCount} Seiten). Bitte in <= ${PDF_PAGE_HARD_CAP} Seiten aufteilen.`
+          : `Document too long (${pageCount} pages). Please split into <= ${PDF_PAGE_HARD_CAP} pages.`;
+      renderStats.capped = true;
+      skipReason = "page_cap";
+      return true;
+    };
+
+    let blockedByPageCap = applyPageCapBlock(renderStats.pageCount);
+
+    const pickTextModels = (content: string, pageCount?: number) => {
+      const isLarge = (pageCount ?? 0) > PDF_PAGE_SOFT_CAP || content.length > TEXT_LONG_CHAR_LIMIT;
+      if (isLarge) {
+        return { primary: PROCESS_TEXT_MODEL_LARGE, fallback: PROCESS_TEXT_MODEL };
+      }
+      return { primary: PROCESS_TEXT_MODEL, fallback: PROCESS_TEXT_FALLBACK_MODEL };
+    };
+
+    const callTextModel = async (
+      content: string,
+      preferredLanguage: SupportedLang,
+      opts?: { primaryModel?: string; fallbackModel?: string }
+    ) => {
       if (!content || content.trim().length === 0) {
         throw new Error(
           "No text extracted from document (possibly scanned or image-only PDF)."
@@ -1691,22 +1820,49 @@ export async function POST(request: Request) {
         return constrained;
       };
 
+      const primaryModel = opts?.primaryModel || PROCESS_TEXT_MODEL;
+      const fallbackModel = opts?.fallbackModel || PROCESS_TEXT_FALLBACK_MODEL;
       try {
-        return await run(PROCESS_TEXT_MODEL);
+        return await run(primaryModel);
       } catch (err) {
-        if (PROCESS_TEXT_MODEL === PROCESS_TEXT_FALLBACK_MODEL) throw err;
+        if (primaryModel === fallbackModel) throw err;
         console.warn(
-          `text model ${PROCESS_TEXT_MODEL} failed; falling back to ${PROCESS_TEXT_FALLBACK_MODEL}`,
+          `text model ${primaryModel} failed; falling back to ${fallbackModel}`,
           err
         );
-        return run(PROCESS_TEXT_FALLBACK_MODEL);
+        return run(fallbackModel);
       }
     };
 
-    const renderPdfImages = async (pdfBuffer: Buffer) => {
+    const renderPdfImages = async (
+      pdfBuffer: Buffer,
+      options?: { maxPages?: number; skipTextPages?: boolean; minTextChars?: number; concurrency?: number }
+    ) => {
       const path = await import("node:path");
       const { pathToFileURL } = await import("node:url");
       const { createRequire } = await import("node:module");
+      const maxPages = Math.max(1, Math.floor(options?.maxPages ?? Number.POSITIVE_INFINITY));
+      const skipTextPages = options?.skipTextPages ?? false;
+      const minTextChars = Math.max(0, Math.floor(options?.minTextChars ?? 0));
+      const concurrency = Math.max(1, Math.floor(options?.concurrency ?? 1));
+
+      const mapWithConcurrency = async <T, R>(
+        items: T[],
+        limit: number,
+        worker: (item: T, index: number) => Promise<R>
+      ) => {
+        const results = new Array<R>(items.length);
+        let next = 0;
+        const runner = async () => {
+          while (next < items.length) {
+            const current = next++;
+            results[current] = await worker(items[current], current);
+          }
+        };
+        const workerCount = Math.min(limit, items.length);
+        await Promise.all(Array.from({ length: workerCount }, () => runner()));
+        return results;
+      };
 
       // Use pdf.js first; if rendering fails, fall back to pdftoppm (Poppler) to rasterize.
       const renderWithPdfjs = async () => {
@@ -1777,29 +1933,54 @@ export async function POST(request: Request) {
         const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBuffer) });
         const pdf = await loadingTask.promise;
         const pageCount = pdf.numPages ?? 1;
-        const images: string[] = [];
+        const targetPages = Math.min(pageCount, maxPages);
+        const indices = Array.from({ length: targetPages }, (_, idx) => idx + 1);
 
-        for (let i = 1; i <= pageCount; i++) {
-          const page = await pdf.getPage(i);
+        const results = await mapWithConcurrency(indices, concurrency, async (pageIndex) => {
+          const page = await pdf.getPage(pageIndex);
+          if (skipTextPages) {
+            const textContent = await page.getTextContent();
+            const pageText = (textContent.items as any[])
+              ?.map((item) => (typeof item?.str === "string" ? item.str : ""))
+              .join(" ");
+            if (pageText && pageText.trim().length > minTextChars) {
+              page.cleanup?.();
+              return { index: pageIndex, skipped: true, image: null as string | null };
+            }
+          }
           const viewport = page.getViewport({ scale: 1.4 }); // keep size reasonable for OCR
           const canvasFactory = new NodeCanvasFactory();
           const { canvas, context } = canvasFactory.create(
             Math.floor(viewport.width),
             Math.floor(viewport.height)
           );
-            await page
-              .render({
-                canvasContext: context as unknown as never,
-                viewport,
-                canvasFactory: canvasFactory as unknown as never,
-              } as any)
-              .promise;
+          await page
+            .render({
+              canvasContext: context as unknown as never,
+              viewport,
+              canvasFactory: canvasFactory as unknown as never,
+            } as any)
+            .promise;
           // JPEG keeps payload smaller for vision
           const jpgBuffer = canvas.toBuffer("image/jpeg", { quality: 0.7 });
-          images.push(`data:image/jpeg;base64,${jpgBuffer.toString("base64")}`);
+          const image = `data:image/jpeg;base64,${jpgBuffer.toString("base64")}`;
           canvasFactory.destroy({ canvas, context });
-        }
-        return images;
+          page.cleanup?.();
+          return { index: pageIndex, skipped: false, image };
+        });
+
+        const images = results
+          .filter((r) => r && !r.skipped && r.image)
+          .sort((a, b) => a.index - b.index)
+          .map((r) => r.image as string);
+        const skippedTextPages = results.filter((r) => r && r.skipped).length;
+        return {
+          images,
+          pageCount,
+          renderedPages: images.length,
+          skippedTextPages,
+          capped: pageCount > maxPages,
+        };
       };
 
       const renderWithPoppler = async () => {
@@ -1826,13 +2007,21 @@ export async function POST(request: Request) {
           if (!files.length) {
             throw new Error("pdftoppm produced no images");
           }
+          const capped = files.length > maxPages;
+          const limitedFiles = files.slice(0, maxPages);
           const images: string[] = [];
-          for (const file of files) {
+          for (const file of limitedFiles) {
             const buf = await fs.readFile(path.join(tmpDir, file));
             images.push(`data:image/png;base64,${buf.toString("base64")}`);
           }
           await cleanup();
-          return images;
+          return {
+            images,
+            pageCount: files.length,
+            renderedPages: images.length,
+            skippedTextPages: 0,
+            capped,
+          };
         } catch (err: any) {
           await cleanup();
           if (err?.code === "ENOENT") {
@@ -1852,6 +2041,10 @@ export async function POST(request: Request) {
 
     const callVisionModel = async (images: string[], preferredLanguage: SupportedLang) => {
       if (!images.length) throw new Error("No images available for vision OCR.");
+      const limited = images.slice(0, VISION_PAGE_CAP);
+      if (images.length > limited.length) {
+        console.warn(`vision input capped at ${limited.length} pages (was ${images.length})`);
+      }
       const prompt = [
         `Perform OCR on the provided images, then extract using the schema. Respond in ${preferredLanguage}.`,
         buildExtractionPrompt(preferredLanguage),
@@ -1869,7 +2062,7 @@ export async function POST(request: Request) {
                   type: "text",
                   text: prompt,
                 },
-                ...images.map((img) => ({
+                ...limited.map((img) => ({
                   type: "image_url" as const,
                   image_url: { url: img },
                 })),
@@ -1897,7 +2090,7 @@ export async function POST(request: Request) {
     const ocrImagesToText = async (images: string[]) => {
       if (!images.length) return "";
       // Limit pages to avoid huge payloads
-      const limited = images.slice(0, 4);
+      const limited = images.slice(0, OCR_TEXT_PAGE_CAP);
       const run = (model: string) =>
         openai.chat.completions.create({
           model,
@@ -1931,74 +2124,164 @@ export async function POST(request: Request) {
 
     const MIN_TEXT_CHARS = 200;
 
-    if (isPdf) {
-      try {
-        if (textContent && textContent.trim().length >= MIN_TEXT_CHARS) {
-          parsedJson = await callTextModel(textContent, preferredLanguage);
-        }
-      } catch (err) {
-        console.warn("text model failed for pdf, falling back to OCR", err);
-      }
-      if (!parsedJson) {
-        renderedImages = await renderPdfImages(buffer);
-        usedPdfOcrFallback = true;
+    if (blockedByPageCap && pageCapMessage) {
+      const badgeText = preferredLanguage === "de" ? "Dokument zu lang" : "Document too long";
+      parsedJson = normalizeExtraction(
+        {
+          summary: pageCapMessage,
+          main_summary: pageCapMessage,
+          badge_text: badgeText,
+          extra_details: [],
+          key_fields: { language: preferredLanguage },
+          uncertainty_flags: ["page_limit"],
+        },
+        preferredLanguage,
+        usedPdfOcrFallback
+      );
+    }
+
+    if (!parsedJson) {
+      if (isPdf) {
         try {
-          const ocrText = await ocrImagesToText(renderedImages);
-          if (!ocrText || ocrText.trim().length <= 80) {
-            console.warn("OCR text extraction returned empty/short text for pdf, falling back to vision model");
-          } else {
-            parsedJson = await callTextModel(ocrText, preferredLanguage);
-            extractionSource = "ocr-text";
+          if (textContent && textContent.trim().length >= MIN_TEXT_CHARS) {
+            const models = pickTextModels(textContent, renderStats.pageCount);
+            parsedJson = await timed("text_model_ms", () =>
+              callTextModel(textContent, preferredLanguage, {
+                primaryModel: models.primary,
+                fallbackModel: models.fallback,
+              })
+            );
           }
         } catch (err) {
-          console.warn("OCR text extraction failed for pdf, falling back to vision model", err);
+          console.warn("text model failed for pdf, falling back to OCR", err);
         }
         if (!parsedJson) {
-          try {
-            parsedJson = await callVisionModel(renderedImages, preferredLanguage);
-            extractionSource = "vision-model";
-          } catch (err) {
-            console.warn("vision model failed for pdf, falling back to OCR text", err);
+          const renderResult = await timed("render_ms", () =>
+            renderPdfImages(buffer, {
+              maxPages: PDF_PAGE_HARD_CAP,
+              skipTextPages: textContent.trim().length > 0,
+              minTextChars: PDF_PAGE_TEXT_MIN,
+              concurrency: PDF_RENDER_CONCURRENCY,
+            })
+          );
+          const pdfImages = renderResult.images;
+          renderedImages = pdfImages;
+          renderStats = renderResult;
+          if (!blockedByPageCap) {
+            blockedByPageCap = applyPageCapBlock(renderStats.pageCount);
+          }
+          if (blockedByPageCap && pageCapMessage) {
+            const badgeText = preferredLanguage === "de" ? "Dokument zu lang" : "Document too long";
+            parsedJson = normalizeExtraction(
+              {
+                summary: pageCapMessage,
+                main_summary: pageCapMessage,
+                badge_text: badgeText,
+                extra_details: [],
+                key_fields: { language: preferredLanguage },
+                uncertainty_flags: ["page_limit"],
+              },
+              preferredLanguage,
+              usedPdfOcrFallback
+            );
+          } else {
+            usedPdfOcrFallback = true;
+            try {
+              if (pdfImages.length === 0 && textContent.trim().length > 0) {
+                const models = pickTextModels(textContent, renderStats.pageCount);
+                parsedJson = await timed("text_model_ms", () =>
+                  callTextModel(textContent, preferredLanguage, {
+                    primaryModel: models.primary,
+                    fallbackModel: models.fallback,
+                  })
+                );
+              } else {
+                const ocrText = await timed("ocr_ms", () => ocrImagesToText(pdfImages));
+                const combinedText = [textContent, ocrText].filter(Boolean).join("\n");
+                if (!combinedText || combinedText.trim().length <= 80) {
+                  console.warn("OCR text extraction returned empty/short text for pdf, falling back to vision model");
+                } else {
+                  const models = pickTextModels(combinedText, renderStats.pageCount);
+                  parsedJson = await timed("text_model_ms", () =>
+                    callTextModel(combinedText, preferredLanguage, {
+                      primaryModel: models.primary,
+                      fallbackModel: models.fallback,
+                    })
+                  );
+                  extractionSource = "ocr-text";
+                }
+              }
+            } catch (err) {
+              console.warn("OCR text extraction failed for pdf, falling back to vision model", err);
+            }
+            if (!parsedJson) {
+              try {
+                parsedJson = await timed("vision_ms", () => callVisionModel(pdfImages, preferredLanguage));
+                extractionSource = "vision-model";
+              } catch (err) {
+                console.warn("vision model failed for pdf, falling back to OCR text", err);
+              }
+            }
           }
         }
-      }
-    } else if (textContent && textContent.trim().length > 0) {
-      parsedJson = await callTextModel(textContent, preferredLanguage);
+      } else if (textContent && textContent.trim().length > 0) {
+        const models = pickTextModels(textContent, renderStats.pageCount);
+        parsedJson = await timed("text_model_ms", () =>
+          callTextModel(textContent, preferredLanguage, {
+            primaryModel: models.primary,
+            fallbackModel: models.fallback,
+          })
+        );
     } else if (isImage) {
       const mime = lowerPath.endsWith(".png") ? "image/png" : "image/jpeg";
       const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
-      renderedImages = [dataUrl];
+      const imageList = [dataUrl];
+      renderedImages = imageList;
+      renderStats = { pageCount: 1, renderedPages: 1, skippedTextPages: 0, capped: false };
       try {
-        const ocrText = await ocrImagesToText(renderedImages);
+        const ocrText = await timed("ocr_ms", () => ocrImagesToText(imageList));
         if (!ocrText || ocrText.trim().length <= 80) {
           console.warn("OCR text extraction returned empty/short text for image, falling back to vision model");
         } else {
-          parsedJson = await callTextModel(ocrText, preferredLanguage);
-          extractionSource = "ocr-text";
-        }
-      } catch (err) {
-        console.warn("OCR text extraction failed for image, falling back to vision model", err);
+            const models = pickTextModels(ocrText, renderStats.pageCount);
+            parsedJson = await timed("text_model_ms", () =>
+              callTextModel(ocrText, preferredLanguage, {
+                primaryModel: models.primary,
+                fallbackModel: models.fallback,
+              })
+            );
+            extractionSource = "ocr-text";
+          }
+        } catch (err) {
+          console.warn("OCR text extraction failed for image, falling back to vision model", err);
       }
       if (!parsedJson) {
         try {
-          parsedJson = await callVisionModel(renderedImages, preferredLanguage);
+          parsedJson = await timed("vision_ms", () => callVisionModel(imageList, preferredLanguage));
           extractionSource = "vision-model";
         } catch (innerErr) {
           console.warn("vision model failed for image, falling back to OCR text", innerErr);
         }
       }
-    } else {
-      throw new Error(
-        "No text extracted and file type unsupported for OCR fallback."
-      );
+      } else {
+        throw new Error(
+          "No text extracted and file type unsupported for OCR fallback."
+        );
+      }
     }
 
     if (!parsedJson || !parsedJson.summary) {
       // If vision summary failed, try OCR -> text -> text model as a fallback
       if (renderedImages && renderedImages.length) {
-        const ocrText = await ocrImagesToText(renderedImages);
+        const ocrText = await timed("ocr_ms", () => ocrImagesToText(renderedImages));
         if (ocrText && ocrText.trim().length > 80) {
-          parsedJson = await callTextModel(ocrText, preferredLanguage);
+          const models = pickTextModels(ocrText, renderStats.pageCount);
+          parsedJson = await timed("text_model_ms", () =>
+            callTextModel(ocrText, preferredLanguage, {
+              primaryModel: models.primary,
+              fallbackModel: models.fallback,
+            })
+          );
           extractionSource = "ocr-text";
         }
       }
@@ -2013,8 +2296,20 @@ export async function POST(request: Request) {
       };
       if (usedPdfOcrFallback && !parsedJson.badge_text) {
         parsedJson.badge_text = "Scanned letter (please double-check numbers)";
+      }
     }
-  }
+
+    if (parsedJson && fileHash) {
+      const meta = {
+        source_hash: fileHash,
+        page_count: renderStats.pageCount ?? null,
+        rendered_pages: renderStats.renderedPages ?? null,
+        skipped_text_pages: renderStats.skippedTextPages ?? null,
+        capped: renderStats.capped ?? false,
+        skip_reason: skipReason ?? null,
+      };
+      (parsedJson as any).meta = { ...(parsedJson as any).meta, ...meta };
+    }
 
     let effectiveCategoryId: string | null = doc.category_id ?? null;
 
@@ -2174,7 +2469,7 @@ export async function POST(request: Request) {
       console.error("task creation failed", err);
     }
 
-    const friendlyTitle = buildFriendlyTitle(parsedJson) || doc.title;
+    const friendlyTitle = skipReason === "page_cap" ? doc.title : buildFriendlyTitle(parsedJson) || doc.title;
 
     // Log label candidates (best-effort; skip if table missing)
     try {
@@ -2213,7 +2508,7 @@ export async function POST(request: Request) {
     }
 
     // Attempt to rename stored file (any type) to match friendly title
-    if (doc.storage_path && friendlyTitle) {
+    if (doc.storage_path && friendlyTitle && skipReason !== "page_cap") {
       const extMatch = doc.storage_path.includes(".")
         ? doc.storage_path.slice(doc.storage_path.lastIndexOf("."))
         : "";
@@ -2246,17 +2541,30 @@ export async function POST(request: Request) {
       .eq("id", doc.id);
     if (finalUpdateError) throw finalUpdateError;
 
+    timings.total_ms = Date.now() - totalStart;
+    const finalStatus = skipReason ? "skipped" : "success";
     await logTelemetryEvent({
       timestamp: new Date().toISOString(),
       kind: "process-document",
-      status: "success",
+      status: finalStatus,
       documentId: doc.id,
       userId: doc.user_id,
       model: extractionSource,
       usedOcrFallback: usedPdfOcrFallback,
+      skipReason: skipReason ?? undefined,
+      timings_ms: timings,
+      page_count: renderStats.pageCount,
+      rendered_pages: renderStats.renderedPages,
+      skipped_text_pages: renderStats.skippedTextPages,
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({
+      ok: true,
+      skipped: !!skipReason,
+      skipReason: skipReason ?? undefined,
+      pageCount: renderStats.pageCount ?? undefined,
+      hardCap: skipReason === "page_cap" ? PDF_PAGE_HARD_CAP : undefined,
+    });
   } catch (err) {
     console.error("process-document error", err);
     if (documentId) {
@@ -2267,6 +2575,7 @@ export async function POST(request: Request) {
         .update({ status: "error", error_message: message })
         .eq("id", documentId);
     }
+    timings.total_ms = Date.now() - totalStart;
     await logTelemetryEvent({
       timestamp: new Date().toISOString(),
       kind: "process-document",
@@ -2276,6 +2585,10 @@ export async function POST(request: Request) {
       model: extractionSource,
       usedOcrFallback: usedPdfOcrFallback,
       message: err instanceof Error ? err.message : "unknown error",
+      timings_ms: timings,
+      page_count: renderStats.pageCount,
+      rendered_pages: renderStats.renderedPages,
+      skipped_text_pages: renderStats.skippedTextPages,
     });
     return NextResponse.json(
       { error: "Failed to process document" },

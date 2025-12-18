@@ -299,7 +299,20 @@ export default function UploadForm({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ documentId: inserted.id, preferredLanguage: lang }),
-        }).catch((err) => console.error("process-document trigger failed", err));
+        })
+          .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) return;
+            if (data?.skipReason === "page_cap") {
+              const capValue = typeof data?.hardCap === "number" ? data.hardCap : 60;
+              window.dispatchEvent(
+                new CustomEvent("docflow:toast", {
+                  detail: { message: t("pageCapToast", { count: capValue }), duration: 5000 },
+                })
+              );
+            }
+          })
+          .catch((err) => console.error("process-document trigger failed", err));
 
         window.dispatchEvent(
           new CustomEvent("docflow:optimistic-upload-complete", {

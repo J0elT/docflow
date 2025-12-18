@@ -6220,3 +6220,938 @@ Lint currently fails due to pre-existing repo errors (e.g., @typescript-eslint/n
   "notes": ""
 }
 ```
+
+## 2025-12-19 — FEATURE: Processing speed optimizations (caps, hash reuse, telemetry)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-19-processing-speed-optimizations",
+  "mode": "FEATURE",
+  "title": "Processing speed optimizations (caps, hash reuse, model tiering)",
+  "description": "Improve processing latency without major quality loss by adding PDF page caps, skipping OCR on text-heavy pages, hashing/skip for unchanged files (with force override), model tiering for large docs, and richer telemetry timings.",
+  "acceptanceCriteria": [
+    "process-document skips reprocessing when the storage hash matches the latest extraction unless force=true.",
+    "PDF OCR/vision rendering caps pages and skips text-heavy pages during OCR fallback.",
+    "Large documents route to a fast text model (with fallback to the default model) based on page count or text length.",
+    "Telemetry logs timing fields and page/render counts for processing runs.",
+    "Reprocess action triggers force processing explicitly."
+  ],
+  "createdAt": "2025-12-19T20:55:00.000Z",
+  "metadata": {
+    "targetFiles": [
+      "src/app/api/process-document/route.ts",
+      "src/components/DocumentTable.tsx",
+      "src/lib/telemetry.ts"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "analysis",
+    "description": "Survey SoT + processing pipeline (PRD/tasks, prompts, process-document route, telemetry).",
+    "targetFiles": ["PRD.Next.md", "tasks/tasks-prd-next.md", "prompts.md", "v2docflowprompt.md", "src/app/api/process-document/route.ts", "src/lib/telemetry.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "code",
+    "description": "Add page caps, hash reuse, OCR skip heuristics, model tiering, and render concurrency limits; wire force reprocess and telemetry timings.",
+    "targetFiles": ["src/app/api/process-document/route.ts", "src/components/DocumentTable.tsx", "src/lib/telemetry.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "kind": "tests",
+    "description": "Run process-document unit tests.",
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/process-document/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Rendered all PDF pages for OCR/vision, always processed regardless of file hash, and emitted minimal telemetry.",
+    "afterSnippet": "Adds file hash reuse with force override, PDF page caps + text-page skipping, model tiering for large docs, bounded render concurrency, OCR/vision page caps, and timing telemetry with render stats.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/DocumentTable.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Reprocess action always calls /api/process-document without a force flag.",
+    "afterSnippet": "Reprocess action now sends force=true to bypass hash-based skips.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/lib/telemetry.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Telemetry events only captured success/error and minimal metadata.",
+    "afterSnippet": "Telemetry events include skipped status and optional timings + page/render counts.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run -- src/app/api/process-document/route.test.ts
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/summary.test.ts (3 tests) 1ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 5ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 6ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 10ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 11ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 28ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  20:54:24
+   Duration  503ms (transform 460ms, setup 0ms, import 733ms, tests 67ms, environment 1ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "Processing now skips unchanged files via hash matching (unless forced), caps/scopes PDF OCR/vision rendering, tiers text models for large docs, and emits timing/page telemetry for speed analysis.",
+  "risks": [
+    "Hard page caps can omit late pages in very long scanned PDFs, which may reduce extraction completeness.",
+    "Text-page skipping uses a character threshold; pages with sparse but important text could be skipped from OCR.",
+    "Large-doc model tiering may reduce quality vs the default model; thresholds may require tuning.",
+    "Hash-based reuse depends on stored extraction metadata; older extractions without hashes will still reprocess once."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-19 — BUGFIX: process-document timed helper TDZ
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-19-process-document-timed-tdz",
+  "mode": "BUGFIX",
+  "title": "Fix timed helper TDZ in process-document",
+  "description": "Move the timed helper above its first use to avoid ReferenceError during processing.",
+  "acceptanceCriteria": [
+    "POST /api/process-document no longer throws ReferenceError for timed helper.",
+    "process-document unit tests pass."
+  ],
+  "createdAt": "2025-12-19T21:05:30.000Z",
+  "metadata": {
+    "targetFiles": ["src/app/api/process-document/route.ts"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Hoist timed helper above first use in process-document route.",
+    "targetFiles": ["src/app/api/process-document/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run process-document unit tests.",
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "done": true,
+    "notes": ""
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/process-document/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "timed helper declared after first use, causing TDZ ReferenceError.",
+    "afterSnippet": "timed helper declared before use to avoid ReferenceError.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured raw output below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run -- src/app/api/process-document/route.test.ts
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 4ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 4ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 9ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 10ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 16ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 40ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  21:05:06
+   Duration  447ms (transform 769ms, setup 0ms, import 1.08s, tests 89ms, environment 1ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Timed helper is hoisted before use; process-document no longer throws ReferenceError.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-19 — BUGFIX: Block oversize PDF processing
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-19-block-oversize-pdf-processing",
+  "mode": "BUGFIX",
+  "title": "Block oversize PDF processing with a user-visible summary",
+  "description": "Skip OCR/vision when a PDF exceeds the hard page cap and store a minimal extraction that tells the user to split the document, without hiding the document in the UI.",
+  "acceptanceCriteria": [
+    "PDFs over the hard page cap are not processed by OCR/vision or models.",
+    "Oversize PDFs store a clear summary/badge telling the user to split the document.",
+    "Documents remain visible (status done) and are not auto-renamed based on the placeholder.",
+    "Telemetry records the skip reason and page count.",
+    "Process-document tests pass."
+  ],
+  "createdAt": "2025-12-19T22:25:00.000Z",
+  "metadata": {
+    "backlogItem": "tasks/tasks-prd-next.md#L17-L20 (1.3a)",
+    "targetFiles": [
+      "src/app/api/process-document/route.ts",
+      "DECISIONS.md",
+      "tasks/tasks-prd-next.md",
+      "Plan.md"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Detect oversize PDFs and build a placeholder extraction that instructs the user to split the document.",
+    "targetFiles": ["src/app/api/process-document/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "code",
+    "description": "Skip renaming/categorization side effects for blocked docs and log skip telemetry.",
+    "targetFiles": ["src/app/api/process-document/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "kind": "tests",
+    "description": "Run process-document unit tests.",
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/process-document/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Oversize PDFs returned a 413 and set status=error, hiding the document from the UI.",
+    "afterSnippet": "Oversize PDFs skip OCR/vision, store a minimal extraction with a clear split message, and log skip telemetry without hiding the document.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "tasks/tasks-prd-next.md",
+    "changeType": "modify",
+    "beforeSnippet": "Hardening task had no sub-item for oversize PDF blocking.",
+    "afterSnippet": "Add and complete a subtask for blocking oversize PDF processing.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "DECISIONS.md",
+    "changeType": "modify",
+    "beforeSnippet": "No decision recorded for blocking oversize PDFs.",
+    "afterSnippet": "Decision added for blocking oversize PDFs with user-visible summary.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run -- src/app/api/process-document/route.test.ts
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 3ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 8ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 8ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 12ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 33ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  21:36:12
+   Duration  478ms (transform 517ms, setup 0ms, import 781ms, tests 75ms, environment 1ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Oversize PDFs are blocked with a user-visible summary and telemetry skip marker, while keeping documents visible.",
+  "risks": [
+    "Page-count detection depends on pdf-parse metadata; if missing, oversized PDFs may still process."
+  ],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-19 — BUGFIX: Allow null field_confidence values
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-19-allow-null-field-confidence",
+  "mode": "BUGFIX",
+  "title": "Allow null field_confidence values in extraction schema",
+  "description": "Prevent extraction validation failures when models return null field_confidence entries by allowing nullable values.",
+  "acceptanceCriteria": [
+    "Validation no longer fails when field_confidence entries are null.",
+    "Process-document unit tests pass."
+  ],
+  "createdAt": "2025-12-19T22:45:00.000Z",
+  "metadata": {
+    "targetFiles": ["src/lib/extractionSchema.ts", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Allow null values in field_confidence record schema.",
+    "targetFiles": ["src/lib/extractionSchema.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run process-document unit tests.",
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/lib/extractionSchema.ts",
+    "changeType": "modify",
+    "beforeSnippet": "field_confidence required numbers; null values failed validation.",
+    "afterSnippet": "field_confidence allows nullable numbers to avoid validation errors.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run -- src/app/api/process-document/route.test.ts
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 5ms
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 8ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 7ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 14ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 29ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  22:06:08
+   Duration  360ms (transform 534ms, setup 0ms, import 740ms, tests 71ms, environment 0ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Schema tolerates null field_confidence values so model outputs no longer fail validation.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-19 — BUGFIX: Enforce hard page cap after render
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-19-enforce-hard-cap-after-render",
+  "mode": "BUGFIX",
+  "title": "Enforce hard page cap once PDF page count is known",
+  "description": "Ensure oversize PDFs are blocked even when page count isn’t available before OCR/vision rendering.",
+  "acceptanceCriteria": [
+    "If page count is unknown initially, we still block after render reveals it.",
+    "Oversize PDFs return a split-document message instead of running OCR/vision.",
+    "Process-document unit tests pass."
+  ],
+  "createdAt": "2025-12-19T23:05:00.000Z",
+  "metadata": {
+    "targetFiles": ["src/app/api/process-document/route.ts", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Check hard cap after renderPdfImages populates pageCount and skip OCR/vision if exceeded.",
+    "targetFiles": ["src/app/api/process-document/route.ts"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run process-document unit tests.",
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/process-document/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Hard-cap block only ran before rendering; PDFs with unknown page count could still process.",
+    "afterSnippet": "Hard-cap block re-evaluated after render sets pageCount and skips OCR/vision if exceeded.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run -- src/app/api/process-document/route.test.ts
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 3ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 8ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 10ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 11ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 29ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  23:52:29
+   Duration  351ms (transform 559ms, setup 0ms, import 776ms, tests 68ms, environment 1ms)
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Hard page cap now applies once page count is known after rendering.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-20 — UX: Page cap toast on oversize documents
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-page-cap-toast",
+  "mode": "FEATURE",
+  "title": "Show a toast when documents exceed the page cap",
+  "description": "When a document exceeds the hard page cap, show a 5-second toast explaining the limit after processing completes.",
+  "acceptanceCriteria": [
+    "POST /api/process-document returns skip metadata for page-cap cases.",
+    "Upload and reprocess flows show a 5-second toast for page-cap blocks.",
+    "Toast text is localized (EN/DE)."
+  ],
+  "createdAt": "2025-12-20T00:10:00.000Z",
+  "metadata": {
+    "targetFiles": [
+      "src/app/api/process-document/route.ts",
+      "src/components/UploadForm.tsx",
+      "src/components/DocumentTable.tsx",
+      "src/lib/language.tsx",
+      "Plan.md"
+    ]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Return skip metadata from process-document and emit a toast for page-cap skips.",
+    "targetFiles": ["src/app/api/process-document/route.ts", "src/components/UploadForm.tsx", "src/components/DocumentTable.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "code",
+    "description": "Add localized toast copy for page-cap notification.",
+    "targetFiles": ["src/lib/language.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-3",
+    "kind": "tests",
+    "description": "Run relevant tests if needed.",
+    "targetFiles": [],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/app/api/process-document/route.ts",
+    "changeType": "modify",
+    "beforeSnippet": "Success responses did not include skip metadata for page-cap cases.",
+    "afterSnippet": "Responses include skipReason/pageCount/hardCap for page-cap cases.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/UploadForm.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "Processing fetch ignored response body.",
+    "afterSnippet": "Processing fetch reads skipReason and dispatches a toast for page-cap skips.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/components/DocumentTable.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "No toast mechanism for page-cap notices.",
+    "afterSnippet": "Global toast handler added; reprocess shows page-cap toast.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "src/lib/language.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "No localized page-cap toast text.",
+    "afterSnippet": "Add EN/DE page-cap toast strings.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "manual-toast",
+    "description": "Upload/reprocess a >60-page PDF and confirm toast appears for 5 seconds.",
+    "type": "manual",
+    "commands": [],
+    "targetFiles": [],
+    "notes": "Not run."
+  },
+  {
+    "id": "vitest-process-document",
+    "description": "Run process-document unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "targetFiles": ["src/app/api/process-document/route.test.ts"],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Page-cap skips now trigger a 5-second toast with localized copy.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test -- src/app/api/process-document/route.test.ts"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
+
+## 2025-12-20 — UX: Hide oversize documents (toast only)
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-hide-oversize-docs",
+  "mode": "FEATURE",
+  "title": "Hide oversize documents and rely on toast messaging",
+  "description": "Remove oversize (page-cap blocked) documents from the list so the toast is the only explanation shown to the user.",
+  "acceptanceCriteria": [
+    "Documents with page-cap skip reason do not appear in list views.",
+    "Optimistic upload rows still clear once processing completes.",
+    "Toast still appears on page-cap skips."
+  ],
+  "createdAt": "2025-12-20T00:30:00.000Z",
+  "metadata": {
+    "targetFiles": ["src/components/DocumentTable.tsx", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Track skip_reason from extraction meta and filter page-cap docs from lists while still clearing optimistic rows.",
+    "targetFiles": ["src/components/DocumentTable.tsx"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run relevant tests if needed.",
+    "targetFiles": [],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test; NO_COLOR=1 pnpm build"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "src/components/DocumentTable.tsx",
+    "changeType": "modify",
+    "beforeSnippet": "All processed documents were displayed, including page-cap blocked entries.",
+    "afterSnippet": "Page-cap blocked documents are filtered from lists while still clearing optimistic uploads.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "manual-oversize-toast",
+    "description": "Upload/reprocess a >60-page PDF and confirm the card disappears while the toast shows the message.",
+    "type": "manual",
+    "commands": [],
+    "targetFiles": [],
+    "notes": "Not run."
+  },
+  {
+    "id": "vitest",
+    "description": "Run full unit test suite.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Captured below."
+  },
+  {
+    "id": "next-build",
+    "description": "Run production build.",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 1ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 4ms
+ ✓ src/lib/summary.test.ts (3 tests) 3ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 4ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 9ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 5ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 28ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  00:17:55
+   Duration  390ms (transform 451ms, setup 0ms, import 665ms, tests 58ms, environment 1ms)
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1620.9ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18) 
+   Generating static pages using 9 workers (8/18) 
+   Generating static pages using 9 workers (13/18) 
+ ✓ Generating static pages using 9 workers (18/18) in 313.7ms
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/bundles/download
+├ ƒ /api/doc-chat
+├ ƒ /api/doc-chat/create-task
+├ ƒ /api/docs
+├ ƒ /api/docs/aggregate
+├ ƒ /api/docs/restructure
+├ ƒ /api/docs/zip
+├ ƒ /api/files-agent
+├ ƒ /api/label-candidates/promote
+├ ƒ /api/process-document
+├ ○ /bundles/download
+├ ○ /files
+├ ○ /login
+└ ○ /tasks
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "Page-cap blocked documents are hidden from the lists; the toast remains the user-facing explanation.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```

@@ -4,12 +4,17 @@ import path from "node:path";
 type TelemetryEvent = {
   timestamp: string;
   kind: "process-document";
-  status: "success" | "error";
+  status: "success" | "error" | "skipped";
   documentId?: string | null;
   userId?: string | null;
   model?: string;
   usedOcrFallback?: boolean;
   message?: string;
+  skipReason?: string;
+  timings_ms?: Record<string, number>;
+  page_count?: number;
+  rendered_pages?: number;
+  skipped_text_pages?: number;
 };
 
 const LOG_ROOT = path.join(process.cwd(), "logs");
