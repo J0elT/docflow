@@ -7322,3 +7322,93 @@ Route (app)
   "notes": ""
 }
 ```
+
+## 2025-12-20 — CI: Switch GitHub Actions to pnpm
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-ci-pnpm",
+  "mode": "CHORE",
+  "title": "Use pnpm in GitHub Actions",
+  "description": "Replace npm ci/npm run with pnpm install --frozen-lockfile and pnpm run to match repo tooling.",
+  "acceptanceCriteria": [
+    "CI uses pnpm install --frozen-lockfile.",
+    "CI runs lint/test/check with pnpm.",
+    "Node cache uses pnpm."
+  ],
+  "createdAt": "2025-12-20T11:20:00.000Z",
+  "metadata": {
+    "targetFiles": [".github/workflows/ci.yml", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Update CI workflow to enable corepack and use pnpm commands.",
+    "targetFiles": [".github/workflows/ci.yml"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run CI locally if needed.",
+    "targetFiles": [],
+    "done": false,
+    "notes": "Not run."
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": ".github/workflows/ci.yml",
+    "changeType": "modify",
+    "beforeSnippet": "npm ci/npm run with npm cache.",
+    "afterSnippet": "pnpm install --frozen-lockfile and pnpm run with pnpm cache.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "ci",
+    "description": "CI run on GitHub Actions.",
+    "type": "ci",
+    "commands": [],
+    "targetFiles": [".github/workflows/ci.yml"],
+    "notes": "Not run locally."
+  }
+]
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "CI now uses pnpm to match the repository lockfile.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": [],
+    "testsImplemented": [],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```

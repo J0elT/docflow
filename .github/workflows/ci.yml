@@ -19,7 +19,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Detect skip-plan label
         if: github.event_name == 'pull_request'
@@ -42,13 +45,13 @@ jobs:
           fi
 
       - name: Check playbook artifacts
-        run: npm run check:playbook
+        run: pnpm run check:playbook
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
 
       - name: Test
-        run: npm run test
+        run: pnpm run test
