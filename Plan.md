@@ -7155,3 +7155,170 @@ Route (app)
   "notes": ""
 }
 ```
+
+## 2025-12-20 — BUGFIX: Ensure pdfjs-dist is installed for Vercel builds
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-add-pdfjs-dist-dependency",
+  "mode": "BUGFIX",
+  "title": "Add pdfjs-dist as a direct dependency",
+  "description": "Vercel build failed to resolve pdfjs-dist/legacy/build/pdf.mjs when pdfjs-dist was only a transitive dependency. Add it directly so bundlers can resolve the module.",
+  "acceptanceCriteria": [
+    "Vercel build can resolve pdfjs-dist/legacy/build/pdf.mjs.",
+    "pnpm test and pnpm build pass locally."
+  ],
+  "createdAt": "2025-12-20T11:05:00.000Z",
+  "metadata": {
+    "targetFiles": ["package.json", "pnpm-lock.yaml", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Add pdfjs-dist to dependencies and update lockfile.",
+    "targetFiles": ["package.json", "pnpm-lock.yaml"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Run unit tests and build.",
+    "targetFiles": [],
+    "done": true,
+    "notes": "NO_COLOR=1 pnpm test; NO_COLOR=1 pnpm build"
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": "package.json",
+    "changeType": "modify",
+    "beforeSnippet": "pdfjs-dist missing from dependencies.",
+    "afterSnippet": "Add pdfjs-dist 5.4.296 to dependencies.",
+    "wholeFile": null
+  },
+  {
+    "filePath": "pnpm-lock.yaml",
+    "changeType": "modify",
+    "beforeSnippet": "No pdfjs-dist entry at the root lockfile.",
+    "afterSnippet": "Lockfile includes pdfjs-dist 5.4.296.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "vitest",
+    "description": "Run unit tests.",
+    "type": "unit",
+    "commands": ["NO_COLOR=1 pnpm test"],
+    "targetFiles": [],
+    "notes": "Captured below."
+  },
+  {
+    "id": "next-build",
+    "description": "Run production build.",
+    "type": "build",
+    "commands": ["NO_COLOR=1 pnpm build"],
+    "targetFiles": [],
+    "notes": "Captured below."
+  }
+]
+```
+
+### Test output (paste raw)
+
+```text
+> docflow@0.1.0 test /Users/joelthal/docflow
+> vitest run
+
+
+ RUN  v4.0.15 /Users/joelthal/docflow
+
+ ✓ src/lib/deterministicConstraints.test.ts (1 test) 2ms
+ ✓ src/lib/moneyFormat.test.ts (2 tests) 4ms
+ ✓ src/lib/scanQuality.test.ts (5 tests) 6ms
+ ✓ src/lib/deterministicCandidates.test.ts (2 tests) 6ms
+ ✓ src/lib/summary.test.ts (3 tests) 2ms
+ ✓ src/lib/deterministicSignals.test.ts (2 tests) 10ms
+ ✓ src/lib/dateFormat.test.ts (4 tests) 36ms
+ ✓ src/app/api/process-document/route.test.ts (11 tests) 3ms
+
+ Test Files  8 passed (8)
+      Tests  30 passed (30)
+   Start at  10:58:15
+   Duration  339ms (transform 395ms, setup 0ms, import 583ms, tests 68ms, environment 1ms)
+
+> docflow@0.1.0 build /Users/joelthal/docflow
+> next build
+
+   ▲ Next.js 16.0.7 (Turbopack)
+   - Environments: .env.local
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 1782.4ms
+   Running TypeScript ...
+   Collecting page data using 9 workers ...
+   Generating static pages using 9 workers (0/18) ...
+   Generating static pages using 9 workers (4/18) 
+   Generating static pages using 9 workers (8/18) 
+   Generating static pages using 9 workers (13/18) 
+ ✓ Generating static pages using 9 workers (18/18) in 403.0ms
+   Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/bundles/download
+├ ƒ /api/doc-chat
+├ ƒ /api/doc-chat/create-task
+├ ƒ /api/docs
+├ ƒ /api/docs/aggregate
+├ ƒ /api/docs/restructure
+├ ƒ /api/docs/zip
+├ ƒ /api/files-agent
+├ ƒ /api/label-candidates/promote
+├ ƒ /api/process-document
+├ ○ /bundles/download
+├ ○ /files
+├ ○ /login
+└ ○ /tasks
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "pass",
+  "summary": "pdfjs-dist is now a direct dependency so Vercel builds can resolve pdf.mjs.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "testsImplemented": ["NO_COLOR=1 pnpm test", "NO_COLOR=1 pnpm build"],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
