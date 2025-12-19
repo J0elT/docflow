@@ -7412,3 +7412,92 @@ Route (app)
   "notes": ""
 }
 ```
+
+## 2025-12-20 — CI: Ensure pnpm is installed in GitHub Actions
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-ci-pnpm-setup",
+  "mode": "CHORE",
+  "title": "Install pnpm in CI via pnpm/action-setup",
+  "description": "Fix GitHub Actions failures where pnpm is missing by installing pnpm explicitly.",
+  "acceptanceCriteria": [
+    "CI has pnpm available on PATH before pnpm commands run.",
+    "Workflow still uses pnpm cache."
+  ],
+  "createdAt": "2025-12-20T11:35:00.000Z",
+  "metadata": {
+    "targetFiles": [".github/workflows/ci.yml", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Add pnpm/action-setup to CI workflow and remove corepack enable step.",
+    "targetFiles": [".github/workflows/ci.yml"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Verify CI run on GitHub Actions.",
+    "targetFiles": [],
+    "done": false,
+    "notes": "Not run locally."
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": ".github/workflows/ci.yml",
+    "changeType": "modify",
+    "beforeSnippet": "Corepack enable step relied on pnpm shim availability.",
+    "afterSnippet": "pnpm/action-setup installs pnpm 10.26.1 explicitly.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "ci",
+    "description": "CI run on GitHub Actions.",
+    "type": "ci",
+    "commands": [],
+    "targetFiles": [".github/workflows/ci.yml"],
+    "notes": "Not run locally."
+  }
+]
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "pnpm/action-setup ensures pnpm is available in CI.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": [],
+    "testsImplemented": [],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
