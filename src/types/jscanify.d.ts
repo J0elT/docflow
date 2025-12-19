@@ -1,4 +1,4 @@
 declare module "jscanify/src/jscanify.js" {
-  const Jscanify: any;
+  const Jscanify: unknown;
   export default Jscanify;
 }

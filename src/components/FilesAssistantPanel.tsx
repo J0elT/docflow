@@ -170,6 +170,7 @@ const linkify = (
 };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
+type ApiMessage = { role?: string | null; content?: string | null };
 
 const cn = (...classes: Array<string | false | null | undefined>) =>
   classes.filter(Boolean).join(" ");
@@ -237,10 +238,12 @@ export default function FilesAssistantPanel({
         if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
         const data = await res.json();
         const msgs = Array.isArray(data?.messages)
-          ? data.messages.filter((m: any) => m?.role && m?.content)
+          ? (data.messages as ApiMessage[]).filter(
+              (m) => typeof m?.role === "string" && typeof m?.content === "string"
+            )
           : [];
         if (msgs.length) {
-          setMessages(msgs);
+          setMessages(msgs as ChatMessage[]);
         } else {
           setMessages([{ role: "assistant", content: introMessage }]);
         }
@@ -328,11 +331,13 @@ export default function FilesAssistantPanel({
           ? data.assistant
           : t("filesAssistantUnavailable") || "Assistant unavailable";
       const serverMessages = Array.isArray(data?.messages)
-        ? data.messages.filter((m: any) => m?.role && m?.content)
+        ? (data.messages as ApiMessage[]).filter(
+            (m) => typeof m?.role === "string" && typeof m?.content === "string"
+          )
         : null;
       setMessages(
         serverMessages && serverMessages.length
-          ? serverMessages
+          ? (serverMessages as ChatMessage[])
           : [...nextMessages, { role: "assistant", content: assistant }]
       );
       onDataChanged?.();

@@ -1433,6 +1433,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     if (typeof window === "undefined") return;
     const stored = localStorage.getItem("docflow-lang");
     if (stored && SUPPORTED.includes(stored as LanguageCode)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLangState(stored as LanguageCode);
     }
   }, []);

@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import downloadIcon from "../../images/download.png";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type MediaViewerProps = {
@@ -352,7 +353,7 @@ export function MediaViewer({
               className="h-11 w-11 rounded-full bg-[rgba(247,243,236,0.18)] flex items-center justify-center pit-shadow-2 backdrop-blur"
             >
               <Image
-                src={require("../../images/download.png")}
+                src={downloadIcon}
                 alt="Download"
                 width={18}
                 height={18}

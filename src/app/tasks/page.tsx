@@ -14,7 +14,7 @@ import folderOff from "../../../images/open-folder-unselected.png";
 import plusIcon from "../../../images/plus.png";
 import checklistOn from "../../../images/paper-plane-2.png";
 import checklistOff from "../../../images/paper-plane.png";
-import { LanguageProvider, useLanguage } from "@/lib/language";
+import { LanguageProvider, useLanguage, type LanguageCode } from "@/lib/language";
 import aiIcon from "../../../images/ai.png";
 import userIcon from "../../../images/user.png";
 import FilesAssistantPanel from "@/components/FilesAssistantPanel";
@@ -333,7 +333,7 @@ function TasksPageInner() {
                 <select
                   aria-label="Language"
                   value={lang}
-                  onChange={(e) => setLang(e.target.value as any)}
+                  onChange={(e) => setLang(e.target.value as LanguageCode)}
                   className="pit-radius-md border border-[rgba(0,0,0,0.15)] bg-[rgba(247,243,236,0.85)] px-2 py-1 text-xs"
                   style={{ color: "rgba(0,0,0,0.75)" }}
                 >
