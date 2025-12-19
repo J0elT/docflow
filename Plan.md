@@ -7501,3 +7501,92 @@ Route (app)
   "notes": ""
 }
 ```
+
+## 2025-12-20 — CI: Fix pnpm cache ordering
+
+### Task (Task)
+
+```json
+{
+  "id": "2025-12-20-ci-pnpm-cache-order",
+  "mode": "CHORE",
+  "title": "Install pnpm before setup-node cache",
+  "description": "Ensure pnpm is on PATH before actions/setup-node runs with cache=pnpm to avoid \"pnpm not found\" errors.",
+  "acceptanceCriteria": [
+    "pnpm/action-setup runs before actions/setup-node cache step.",
+    "CI no longer fails with pnpm not found."
+  ],
+  "createdAt": "2025-12-20T11:45:00.000Z",
+  "metadata": {
+    "targetFiles": [".github/workflows/ci.yml", "Plan.md"]
+  }
+}
+```
+
+### Plan (PlanStep[])
+
+```json
+[
+  {
+    "id": "step-1",
+    "kind": "code",
+    "description": "Reorder CI steps so pnpm installs before setup-node cache usage.",
+    "targetFiles": [".github/workflows/ci.yml"],
+    "done": true,
+    "notes": ""
+  },
+  {
+    "id": "step-2",
+    "kind": "tests",
+    "description": "Verify CI run on GitHub Actions.",
+    "targetFiles": [],
+    "done": false,
+    "notes": "Not run locally."
+  }
+]
+```
+
+### Code changes (CodeChange[])
+
+```json
+[
+  {
+    "filePath": ".github/workflows/ci.yml",
+    "changeType": "modify",
+    "beforeSnippet": "setup-node ran before pnpm/action-setup, causing pnpm cache lookup to fail.",
+    "afterSnippet": "pnpm/action-setup runs first; setup-node uses pnpm cache after pnpm is on PATH.",
+    "wholeFile": null
+  }
+]
+```
+
+### Tests (TestSpec[])
+
+```json
+[
+  {
+    "id": "ci",
+    "description": "CI run on GitHub Actions.",
+    "type": "ci",
+    "commands": [],
+    "targetFiles": [".github/workflows/ci.yml"],
+    "notes": "Not run locally."
+  }
+]
+```
+
+### Gate report (GateReport)
+
+```json
+{
+  "overallStatus": "needs_review",
+  "summary": "pnpm is now installed before the pnpm cache step to avoid \"pnpm not found\" errors.",
+  "risks": [],
+  "testStatus": {
+    "testsPlanned": [],
+    "testsImplemented": [],
+    "manualChecks": []
+  },
+  "notes": ""
+}
+```
